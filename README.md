@@ -52,8 +52,8 @@ The **QRadar Log Forwarding Setup Script** is a comprehensive Bash script design
 Run the script with the QRadar server IP address and port as arguments.
 
 ```bash
-sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>```
-
+sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>
+```
 
 ---
 
