@@ -52,5 +52,23 @@ The **QRadar Log Forwarding Setup Script** is a comprehensive Bash script design
 Run the script with the QRadar server IP address and port as arguments.
 
 ```bash
-sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>
+sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>```
+
+
+---
+
+This `Usage` and `Script Functionality` section is now formatted in Markdown and can be directly included in your `README.md` file on GitHub. Make sure to replace placeholders like `<QRADAR_IP>` and `<QRADAR_PORT>` with your actual QRadar server details when running the script.
+
+### Additional Recommendations
+
+- **Ensure Permissions**: Verify that the script has the necessary execute permissions and is run with root privileges.
+  
+- **Customize Audit Rules**: Depending on your specific logging requirements, you might want to customize the audit rules within the script.
+
+- **Secure Log Transmission**: Consider configuring `rsyslog` to use TLS for secure log transmission to QRadar.
+
+- **Regular Maintenance**: Regularly check the log file (`/var/log/setup_logging.sh.log`) for any issues or updates needed for your logging setup.
+
+Feel free to modify the sections to better fit your project's specific needs or to add any additional information that might be helpful for users.
+
 
