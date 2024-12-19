@@ -44,5 +44,13 @@ The **QRadar Log Forwarding Setup Script** is a comprehensive Bash script design
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/yourusername/qradar-log-forwarding.git
-   cd qradar-log-forwarding
+   git clone https://github.com/00gxd14g/qradar-log-forwarding.git
+   cd qradar-log-forwarding```
+
+## Usage
+
+Run the script with the QRadar server IP address and port as arguments.
+
+```bash
+sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>
+
