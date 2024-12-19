@@ -1,6 +1,6 @@
 # QRadar Log Forwarding Setup Script
 
-![QRadar](https://www.ibm.com/design/language/assets/ibm_logo.svg)
+![QRadar](https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/320px-IBM_logo.svg.png)
 
 ## Overview
 
