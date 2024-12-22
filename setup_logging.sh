@@ -11,6 +11,8 @@ set -e
 QRADAR_IP="$1"
 QRADAR_PORT="$2"
 LOG_FILE="/var/log/setup_logging.sh.log"
+SYSLOG_FILE=""
+AUDITD_LOG_FILE="/var/log/audit/audit.log"
 
 # Audit kurallarını tanımlama
 AUDIT_RULES_CONTENT=$(cat <<'EOF'
@@ -131,12 +133,11 @@ diagnose_rsyslog() {
     systemctl is-active rsyslog &>/dev/null
     if [ $? -ne 0 ]; then
         log "Rsyslog servisi aktif değil. Başlatılıyor."
-        systemctl start rsyslog &>> "$LOG_FILE"
-        if [ $? -eq 0 ]; then
-            log "Rsyslog servisi başarıyla başlatıldı."
-        else
+        systemctl start rsyslog &>> "$LOG_FILE" || {
             log "HATA: Rsyslog servisi başlatılamadı."
-        fi
+            return
+        }
+        log "Rsyslog servisi başarıyla başlatıldı."
     else
         log "Rsyslog servisi aktif."
     fi
@@ -151,14 +152,14 @@ diagnose_rsyslog() {
     fi
 
     # Rsyslog loglarını kontrol et
-    if [ -f /var/log/syslog ]; then
-        log "/var/log/syslog dosyası mevcut."
+    if [ -f "$SYSLOG_FILE" ]; then
+        log "$SYSLOG_FILE dosyası mevcut."
     else
-        log "HATA: /var/log/syslog dosyası bulunamadı."
+        log "HATA: $SYSLOG_FILE dosyası bulunamadı."
     fi
 
     # Rsyslog yapılandırma dosyasının doğru olup olmadığını kontrol et
-    if grep -q "^local1\.\* @@${QRADAR_IP}:${QRADAR_PORT}" /etc/rsyslog.d/60-qradar.conf; then
+    if grep -Fxq "local1.* @@${QRADAR_IP}:${QRADAR_PORT}" /etc/rsyslog.d/60-qradar.conf; then
         log "Rsyslog QRadar konfigürasyonu doğru."
     else
         log "HATA: /etc/rsyslog.d/60-qradar.conf dosyasında QRadar konfigürasyonu bulunamadı veya hatalı."
@@ -175,27 +176,24 @@ diagnose_auditd() {
     systemctl is-active auditd &>/dev/null
     if [ $? -ne 0 ]; then
         log "Auditd servisi aktif değil. Başlatılıyor."
-        systemctl start auditd &>> "$LOG_FILE"
-        if [ $? -eq 0 ]; then
-            log "Auditd servisi başarıyla başlatıldı."
-        else
+        systemctl start auditd &>> "$LOG_FILE" || {
             log "HATA: Auditd servisi başlatılamadı."
-        fi
+            return
+        }
+        log "Auditd servisi başarıyla başlatıldı."
     else
         log "Auditd servisi aktif."
     fi
 
     # Auditd loglarını kontrol et
-    journalctl -u auditd -n 100 &>> "$LOG_FILE"
-    if grep -iq "error" "$LOG_FILE"; then
+    if grep -iq "error" "$AUDITD_LOG_FILE"; then
         log "HATA: Auditd loglarında hata bulundu."
     else
         log "Auditd loglarında herhangi bir hata bulunamadı."
     fi
 
     # Audit kurallarını doğrulama
-    auditctl -l &>> "$LOG_FILE"
-    if grep -q "user_commands" "$LOG_FILE"; then
+    if auditctl -l | grep -q "user_commands"; then
         log "Audit kuralları doğru şekilde yüklendi."
     else
         log "HATA: Audit kuralları doğru şekilde yüklenmedi."
@@ -208,24 +206,26 @@ diagnose_auditd() {
 diagnose_permissions() {
     log "----- Permissions Diagnostic -----"
 
-    # /var/log/syslog izinlerini kontrol et
-    ls -l /var/log/syslog &>> "$LOG_FILE"
-    if [ $? -ne 0 ]; then
-        log "HATA: /var/log/syslog dosyası bulunamadı."
-    else
-        log "/var/log/syslog dosyası mevcut."
-        # İzinlerin doğru olup olmadığını kontrol et (örneğin, rsyslog tarafından yazılabilir olması)
-        if [ ! -w /var/log/syslog ]; then
-            log "HATA: /var/log/syslog dosyasının yazma izinleri yok."
-            chmod 644 /var/log/syslog &>> "$LOG_FILE"
-            if [ $? -eq 0 ]; then
-                log "/var/log/syslog dosyasının izinleri düzeltildi."
-            else
-                log "HATA: /var/log/syslog dosyasının izinleri düzeltilemedi."
-            fi
+    # SYSLOG_FILE izinlerini kontrol et
+    if [ -f "$SYSLOG_FILE" ]; then
+        ls -l "$SYSLOG_FILE" &>> "$LOG_FILE"
+        if [ $? -ne 0 ]; then
+            log "HATA: $SYSLOG_FILE dosyası bulunamadı."
         else
-            log "/var/log/syslog dosyasının yazma izinleri mevcut."
+            log "$SYSLOG_FILE dosyası mevcut."
+            # İzinlerin doğru olup olmadığını kontrol et (örneğin, rsyslog tarafından yazılabilir olması)
+            if [ ! -w "$SYSLOG_FILE" ]; then
+                log "HATA: $SYSLOG_FILE dosyasının yazma izinleri yok."
+                chmod 644 "$SYSLOG_FILE" &>> "$LOG_FILE" || {
+                    log "HATA: $SYSLOG_FILE dosyasının izinleri düzeltilemedi."
+                }
+                log "$SYSLOG_FILE dosyasının izinleri düzeltildi."
+            else
+                log "$SYSLOG_FILE dosyasının yazma izinleri mevcut."
+            fi
         fi
+    else
+        log "HATA: $SYSLOG_FILE dosyası bulunamadı."
     fi
 
     log "----- Permissions Diagnostic Bitti -----"
@@ -273,12 +273,12 @@ local1.* @@${QRADAR_IP}:${QRADAR_PORT}
 EOF
 
     # Rsyslog'u yeniden başlat
-    systemctl restart rsyslog &>> "$LOG_FILE"
-    if [ $? -eq 0 ]; then
-        log "Rsyslog servisi başarıyla yeniden başlatıldı."
-    else
+    systemctl restart rsyslog &>> "$LOG_FILE" || {
         log "HATA: Rsyslog servisi yeniden başlatılamadı."
-    fi
+        return
+    }
+
+    log "Rsyslog servisi başarıyla yeniden başlatıldı."
 
     # Rsyslog konfigürasyonunu doğrulama
     rsyslogd -N1 &>> "$LOG_FILE"
@@ -302,27 +302,30 @@ args = LOG_LOCAL1
 format = string
 EOF
 
-    chmod 640 /etc/audit/plugins.d/syslog.conf &>> "$LOG_FILE"
-    if [ $? -eq 0 ]; then
-        log "Syslog plugin dosya izinleri düzeltildi."
-    else
+    chmod 640 /etc/audit/plugins.d/syslog.conf &>> "$LOG_FILE" || {
         log "HATA: Syslog plugin dosya izinleri düzeltilemedi."
-    fi
+        return
+    }
+
+    log "Syslog plugin dosya izinleri düzeltildi."
 
     # Auditd'yi yeniden başlat
-    systemctl restart auditd &>> "$LOG_FILE"
-    if [ $? -eq 0 ]; then
-        log "Auditd servisi başarıyla yeniden başlatıldı."
-    else
+    systemctl restart auditd &>> "$LOG_FILE" || {
         log "HATA: Auditd servisi yeniden başlatılamadı."
-    fi
+        return
+    }
+
+    log "Auditd servisi başarıyla yeniden başlatıldı."
 
     # Audit kurallarını tekrar yükle
-    augenrules --load &>> "$LOG_FILE"
-    if [ $? -eq 0 ]; then
+    if command -v augenrules &>/dev/null; then
+        augenrules --load &>> "$LOG_FILE" || {
+            log "HATA: Audit kuralları yüklenemedi. Lütfen /etc/audit/rules.d/audit.rules dosyasını manuel olarak kontrol edin."
+            return
+        }
         log "Audit kuralları başarıyla yüklendi."
     else
-        log "HATA: Audit kuralları yüklenemedi. Lütfen /etc/audit/rules.d/audit.rules dosyasını manuel olarak kontrol edin."
+        log "augenrules komutu bulunamadı. Audit kurallarını elle kontrol edin."
     fi
 }
 
@@ -339,17 +342,15 @@ if [ -z "$QRADAR_IP" ] || [ -z "$QRADAR_PORT" ]; then
 fi
 
 # Log dosyasını oluştur ve izinlerini ayarla
-touch "$LOG_FILE" &>/dev/null
-if [ $? -ne 0 ]; then
+touch "$LOG_FILE" &>/dev/null || {
     echo "Log dosyası oluşturulamıyor."
     exit 1
-fi
+}
 
-chmod 600 "$LOG_FILE" &>/dev/null
-if [ $? -ne 0 ]; then
+chmod 600 "$LOG_FILE" &>/dev/null || {
     echo "Log dosyası izinleri ayarlanamadı."
     exit 1
-fi
+}
 
 log "=== Loglama yapılandırma scripti başlıyor ==="
 log "QRadar IP: $QRADAR_IP, Port: $QRADAR_PORT"
@@ -366,36 +367,47 @@ fi
 
 log "Dağıtım: $DISTRO, Versiyon: $VERSION_ID"
 
+# Syslog dosyasını belirleme
+case "$DISTRO" in
+    ubuntu|debian)
+        SYSLOG_FILE="/var/log/syslog"
+        ;;
+    rhel|centos|oracle)
+        SYSLOG_FILE="/var/log/messages"
+        ;;
+    *)
+        error_exit "Bu script şu an sadece Debian/Ubuntu, Red Hat/CentOS, ve Oracle Linux için desteklenmektedir."
+        ;;
+esac
+
+log "Kullanılan Syslog dosyası: $SYSLOG_FILE"
+
 # Paket kurulum fonksiyonu
 install_packages() {
     case "$DISTRO" in
         ubuntu|debian)
             log "Debian/Ubuntu tabanlı sistemler için paket kurulumu başlatılıyor."
-            apt-get update &>> "$LOG_FILE"
-            if [ $? -ne 0 ]; then
+            apt-get update &>> "$LOG_FILE" || {
                 log "HATA: apt-get update başarısız."
                 error_exit "apt-get update başarısız."
-            fi
-            apt-get install -y auditd audispd-plugins rsyslog &>> "$LOG_FILE"
-            if [ $? -ne 0 ]; then
+            }
+            apt-get install -y auditd audispd-plugins rsyslog &>> "$LOG_FILE" || {
                 log "HATA: Gerekli paketler kurulamadı."
                 error_exit "Gerekli paketler kurulamadı."
-            fi
+            }
             ;;
         rhel|centos|oracle)
             log "Red Hat/CentOS/Oracle Linux tabanlı sistemler için paket kurulumu başlatılıyor."
             if command -v dnf &> /dev/null; then
-                dnf install -y audit rsyslog &>> "$LOG_FILE"
-                if [ $? -ne 0 ]; then
+                dnf install -y audit rsyslog &>> "$LOG_FILE" || {
                     log "HATA: Gerekli paketler dnf ile kurulamadı."
                     error_exit "Gerekli paketler dnf ile kurulamadı."
-                fi
+                }
             else
-                yum install -y audit rsyslog &>> "$LOG_FILE"
-                if [ $? -ne 0 ]; then
+                yum install -y audit rsyslog &>> "$LOG_FILE" || {
                     log "HATA: Gerekli paketler yum ile kurulamadı."
                     error_exit "Gerekli paketler yum ile kurulamadı."
-                fi
+                }
             fi
             ;;
         *)
@@ -409,17 +421,15 @@ log "Paketler başarıyla kuruldu."
 
 # Auditd servisini başlat ve etkinleştir
 log "Auditd servisini başlatılıyor ve etkinleştiriliyor."
-systemctl enable auditd &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+systemctl enable auditd &>> "$LOG_FILE" || {
     log "HATA: auditd servisi etkinleştirilemedi."
     error_exit "auditd servisi etkinleştirilemedi."
-fi
+}
 
-systemctl start auditd &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+systemctl start auditd &>> "$LOG_FILE" || {
     log "HATA: auditd servisi başlatılamadı."
     error_exit "auditd servisi başlatılamadı."
-fi
+}
 log "auditd servisi başarıyla başlatıldı."
 
 # Audisp-syslog plugin yapılandırması
@@ -447,20 +457,18 @@ args = LOG_LOCAL1
 format = string
 EOF
 
-chmod 640 "$SYSLOG_CONF" &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+chmod 640 "$SYSLOG_CONF" &>> "$LOG_FILE" || {
     log "HATA: Syslog plugin dosya izinleri ayarlanamadı."
     error_exit "Syslog plugin dosya izinleri ayarlanamadı."
-fi
+}
 
 log "audisp syslog plugin ayarları yapıldı: $SYSLOG_CONF"
 
 # Auditd'yi yeniden başlat
-systemctl restart auditd &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+systemctl restart auditd &>> "$LOG_FILE" || {
     log "HATA: auditd servisi yeniden başlatılamadı."
     error_exit "auditd servisi yeniden başlatılamadı."
-fi
+}
 log "auditd servisi yeniden başlatıldı."
 
 # Rsyslog konfigürasyonu - QRadar'a log iletimi
@@ -474,11 +482,10 @@ EOF
 log "Rsyslog konfigürasyonu oluşturuldu: $RSYSLOG_QRADAR_CONF"
 
 # Rsyslog'u yeniden başlat
-systemctl restart rsyslog &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+systemctl restart rsyslog &>> "$LOG_FILE" || {
     log "HATA: rsyslog servisi yeniden başlatılamadı."
     error_exit "rsyslog servisi yeniden başlatılamadı."
-fi
+}
 log "rsyslog servisi yeniden başlatıldı."
 
 # Audit kurallarını ekleme
@@ -486,33 +493,41 @@ AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
 
 log "Audit kuralları dosyası oluşturuluyor: $AUDIT_RULES_FILE"
 
-echo "$AUDIT_RULES_CONTENT" > "$AUDIT_RULES_FILE"
-if [ $? -ne 0 ]; then
+echo "$AUDIT_RULES_CONTENT" > "$AUDIT_RULES_FILE" || {
     log "HATA: Audit kuralları dosyası oluşturulamadı."
     error_exit "Audit kuralları dosyası oluşturulamadı."
-fi
+}
 
-chmod 640 "$AUDIT_RULES_FILE"
-if [ $? -ne 0 ]; then
+chmod 640 "$AUDIT_RULES_FILE" || {
     log "HATA: Audit kuralları dosya izinleri ayarlanamadı."
     error_exit "Audit kuralları dosya izinleri ayarlanamadı."
-fi
+}
 log "Audit kuralları dosyası oluşturuldu: $AUDIT_RULES_FILE"
 
 # Audit kurallarını yükle
-augenrules --load &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
-    log "HATA: Audit kuralları yüklenemedi."
-    error_exit "Audit kuralları yüklenemedi."
+if command -v augenrules &>/dev/null; then
+    augenrules --load &>> "$LOG_FILE" || {
+        log "HATA: Audit kuralları yüklenemedi."
+        error_exit "Audit kuralları yüklenemedi."
+    }
+    log "Audit kuralları başarıyla yüklendi."
+else
+    log "augenrules komutu bulunamadı. Audit kurallarını elle kontrol edin."
+    # Alternatif olarak, auditctl ile kuralları yükleyebilirsiniz
+    auditctl -R "$AUDIT_RULES_FILE" &>> "$LOG_FILE" || {
+        log "HATA: Audit kuralları auditctl ile yüklenemedi."
+        error_exit "Audit kuralları auditctl ile yüklenemedi."
+    }
+    log "Audit kuralları auditctl ile başarıyla yüklendi."
 fi
+
 log "Audit kuralları başarıyla yüklendi."
 
 # Auditd'yi yeniden başlat
-systemctl restart auditd &>> "$LOG_FILE"
-if [ $? -ne 0 ]; then
+systemctl restart auditd &>> "$LOG_FILE" || {
     log "HATA: auditd servisi yeniden başlatılamadı."
     error_exit "auditd servisi yeniden başlatılamadı."
-fi
+}
 log "auditd servisi yeniden başlatıldı."
 
 # Test 1: Local syslog test
@@ -520,7 +535,7 @@ log "Test mesajı yerel syslog'a gönderiliyor."
 logger "Test message from setup_logging.sh script."
 sleep 2
 
-if grep -q "Test message from setup_logging.sh script." /var/log/syslog; then
+if grep -q "Test message from setup_logging.sh script." "$SYSLOG_FILE"; then
     log "Test mesajı yerel syslog'da bulundu."
 else
     log "Uyarı: Test mesajı yerel syslog'da bulunamadı."
@@ -529,7 +544,7 @@ else
     log "Test mesajını yeniden gönderiyor."
     logger "Test message from setup_logging.sh script."
     sleep 2
-    if grep -q "Test message from setup_logging.sh script." /var/log/syslog; then
+    if grep -q "Test message from setup_logging.sh script." "$SYSLOG_FILE"; then
         log "Test mesajı yerel syslog'da bulundu."
     else
         log "HATA: Test mesajı yerel syslog'da bulunamadı."
@@ -559,7 +574,7 @@ else
     fi
 fi
 
-if grep -q "passwd_modifications" /var/log/syslog; then
+if grep -q "passwd_modifications" "$SYSLOG_FILE"; then
     log "Audit log syslog üzerinden tespit edildi."
 else
     log "Uyarı: Audit log syslog'a düşmedi."
@@ -568,7 +583,7 @@ else
     log "/etc/passwd dosyasına yeniden dokunarak audit log testi yapılıyor."
     touch /etc/passwd
     sleep 2
-    if grep -q "passwd_modifications" /var/log/syslog; then
+    if grep -q "passwd_modifications" "$SYSLOG_FILE"; then
         log "Audit log syslog üzerinden tespit edildi."
     else
         log "HATA: Audit log syslog'a düşmedi."
