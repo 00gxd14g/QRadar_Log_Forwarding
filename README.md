@@ -1,7 +1,7 @@
 # QRadar Log Forwarding Setup Script
 
 ![QRadar](https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/320px-IBM_logo.svg.png)
-
+![QRadar](https://i.imageupload.app/fdf3ab7b2a7f717c3df6.svg)
 ## Overview
 
 The **QRadar Log Forwarding Setup Script** is a comprehensive Bash script designed to automate the configuration of `auditd` and `rsyslog` on various Linux distributions to forward audit and system logs to IBM QRadar. The script not only sets up the necessary configurations but also includes diagnostic tools to detect and automatically fix common issues, ensuring seamless log transmission to your QRadar instance.
