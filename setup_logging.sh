@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 
 # setup_logging.sh
-# Bu script, auditd ve rsyslog yapılandırmasını yapar, logları QRadar'a iletir ve doğrular.
-# Desteklenen dağıtımlar: Debian/Ubuntu, Red Hat/CentOS, Oracle Linux
-# Kullanım: sudo bash setup_logging.sh <QRADAR_IP> <QRADAR_PORT>
+# Bu script, auditd ve rsyslog yapılandırmasını yapar, logları SIEM'e iletir ve doğrular.
+# Desteklenen dağıtımlar: Debian/Ubuntu/Kali, Red Hat/CentOS, Oracle Linux
+# Kullanım: sudo bash setup_logging.sh <SIEM_IP> <SIEM_PORT>
 
 set -e
 
 # Değişkenler
-QRADAR_IP="$1"
-QRADAR_PORT="$2"
+SIEM_IP="$1"
+SIEM_PORT="$2"
 LOG_FILE="/var/log/setup_logging.sh.log"
 SYSLOG_FILE=""
 AUDITD_LOG_FILE="/var/log/audit/audit.log"
@@ -159,10 +159,10 @@ diagnose_rsyslog() {
     fi
 
     # Rsyslog yapılandırma dosyasının doğru olup olmadığını kontrol et
-    if grep -Fxq "local1.* @@${QRADAR_IP}:${QRADAR_PORT}" /etc/rsyslog.d/60-qradar.conf; then
-        log "Rsyslog QRadar konfigürasyonu doğru."
+    if grep -Fxq "local1.* @@${SIEM_IP}:${SIEM_PORT}" /etc/rsyslog.d/60-siem.conf; then
+        log "Rsyslog SIEM konfigürasyonu doğru."
     else
-        log "HATA: /etc/rsyslog.d/60-qradar.conf dosyasında QRadar konfigürasyonu bulunamadı veya hatalı."
+        log "HATA: /etc/rsyslog.d/60-siem.conf dosyasında SIEM konfigürasyonu bulunamadı veya hatalı."
         fix_rsyslog_config
     fi
 
@@ -266,10 +266,10 @@ diagnose_selinux_apparmor() {
 fix_rsyslog_config() {
     log "Rsyslog konfigürasyonunu düzeltmeye çalışıyor."
 
-    # 60-qradar.conf dosyasını yeniden oluştur
-    cat <<EOF > /etc/rsyslog.d/60-qradar.conf
-# Forward local1.* to QRadar
-local1.* @@${QRADAR_IP}:${QRADAR_PORT}
+    # 60-siem.conf dosyasını yeniden oluştur
+    cat <<EOF > /etc/rsyslog.d/60-siem.conf
+# Forward local1.* to SIEM
+local1.* @@${SIEM_IP}:${SIEM_PORT}
 EOF
 
     # Rsyslog'u yeniden başlat
@@ -285,7 +285,7 @@ EOF
     if [ $? -eq 0 ]; then
         log "Rsyslog konfigürasyon doğrulandı. Herhangi bir hata bulunmadı."
     else
-        log "HATA: Rsyslog konfigürasyonunda hata var. Lütfen /etc/rsyslog.d/60-qradar.conf dosyasını manuel olarak kontrol edin."
+        log "HATA: Rsyslog konfigürasyonunda hata var. Lütfen /etc/rsyslog.d/60-siem.conf dosyasını manuel olarak kontrol edin."
     fi
 }
 
@@ -336,8 +336,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Argüman kontrolü
-if [ -z "$QRADAR_IP" ] || [ -z "$QRADAR_PORT" ]; then
-    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT>"
+if [ -z "$SIEM_IP" ] || [ -z "$SIEM_PORT" ]; then
+    echo "Kullanım: $0 <SIEM_IP> <SIEM_PORT>"
     exit 1
 fi
 
@@ -353,7 +353,7 @@ chmod 600 "$LOG_FILE" &>/dev/null || {
 }
 
 log "=== Loglama yapılandırma scripti başlıyor ==="
-log "QRadar IP: $QRADAR_IP, Port: $QRADAR_PORT"
+log "SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
 
 # Dağıtım tespiti
 if [ -f /etc/os-release ]; then
@@ -369,14 +369,14 @@ log "Dağıtım: $DISTRO, Versiyon: $VERSION_ID"
 
 # Syslog dosyasını belirleme
 case "$DISTRO" in
-    ubuntu|debian)
+    ubuntu|debian|kali)
         SYSLOG_FILE="/var/log/syslog"
         ;;
     rhel|centos|oracle)
         SYSLOG_FILE="/var/log/messages"
         ;;
     *)
-        error_exit "Bu script şu an sadece Debian/Ubuntu, Red Hat/CentOS, ve Oracle Linux için desteklenmektedir."
+        error_exit "Bu script şu an sadece Debian/Ubuntu/Kali, Red Hat/CentOS, ve Oracle Linux için desteklenmektedir."
         ;;
 esac
 
@@ -385,8 +385,8 @@ log "Kullanılan Syslog dosyası: $SYSLOG_FILE"
 # Paket kurulum fonksiyonu
 install_packages() {
     case "$DISTRO" in
-        ubuntu|debian)
-            log "Debian/Ubuntu tabanlı sistemler için paket kurulumu başlatılıyor."
+        ubuntu|debian|kali)
+            log "Debian/Ubuntu/Kali tabanlı sistemler için paket kurulumu başlatılıyor."
             apt-get update &>> "$LOG_FILE" || {
                 log "HATA: apt-get update başarısız."
                 error_exit "apt-get update başarısız."
@@ -411,7 +411,7 @@ install_packages() {
             fi
             ;;
         *)
-            error_exit "Bu script şu an sadece Debian/Ubuntu, Red Hat/CentOS, ve Oracle Linux için desteklenmektedir."
+            error_exit "Bu script şu an sadece Debian/Ubuntu/Kali, Red Hat/CentOS, ve Oracle Linux için desteklenmektedir."
             ;;
     esac
 }
@@ -471,15 +471,15 @@ systemctl restart auditd &>> "$LOG_FILE" || {
 }
 log "auditd servisi yeniden başlatıldı."
 
-# Rsyslog konfigürasyonu - QRadar'a log iletimi
-RSYSLOG_QRADAR_CONF="/etc/rsyslog.d/60-qradar.conf"
+# Rsyslog konfigürasyonu - SIEM'e log iletimi
+RSYSLOG_SIEM_CONF="/etc/rsyslog.d/60-siem.conf"
 
-cat <<EOF > "$RSYSLOG_QRADAR_CONF"
-# Forward local1.* to QRadar
-local1.* @@${QRADAR_IP}:${QRADAR_PORT}
+cat <<EOF > "$RSYSLOG_SIEM_CONF"
+# Forward local1.* to SIEM
+local1.* @@${SIEM_IP}:${SIEM_PORT}
 EOF
 
-log "Rsyslog konfigürasyonu oluşturuldu: $RSYSLOG_QRADAR_CONF"
+log "Rsyslog konfigürasyonu oluşturuldu: $RSYSLOG_SIEM_CONF"
 
 # Rsyslog'u yeniden başlat
 systemctl restart rsyslog &>> "$LOG_FILE" || {
@@ -597,9 +597,9 @@ diagnose_permissions
 # SELinux/AppArmor Diagnostic
 diagnose_selinux_apparmor
 
-# Doğrulama: Audit loglarının QRadar'a iletilip iletilmediğini kontrol etmek için tcpdump önerisi
-log "Audit loglarının QRadar'a iletilip iletilmediğini doğrulamak için QRadar sunucusunda tcpdump kullanabilirsiniz."
-log "Örnek komut: sudo tcpdump -i eth0 host $QRADAR_IP and port $QRADAR_PORT -nn -vv"
+# Doğrulama: Audit loglarının SIEM'e iletilip iletilmediğini kontrol etmek için tcpdump önerisi
+log "Audit loglarının SIEM'e iletilip iletilmediğini doğrulamak için SIEM sunucusunda tcpdump kullanabilirsiniz."
+log "Örnek komut: sudo tcpdump -i eth0 host $SIEM_IP and port $SIEM_PORT -nn -vv"
 
 log "=== Loglama yapılandırma scripti tamamlandı ==="
 exit 0
