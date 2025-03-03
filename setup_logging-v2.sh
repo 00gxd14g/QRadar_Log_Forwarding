@@ -3,10 +3,14 @@ set -e
 
 # ------------------------------------------------------------------------------
 # Combined Auditd & Rsyslog Setup Script
-# Enhanced version with comprehensive error handling and logging
+# (Die.net auditd.conf(8) man sayfasına göre güncellendi)
+# Bu sürümde auditd.conf dosyası, log_facility parametresi ile değiştirilmez.
+# Audit logları, audisp-syslog yapılandırması ile LOG_LOCAL3 kullanılarak syslog'a gönderilir.
+#
+# Kullanım: sudo bash setup_logging.sh <SIEM_IP> <SIEM_PORT>
 # ------------------------------------------------------------------------------
 
-# Global variables
+# Global değişkenler
 LOG_FILE="/var/log/setup_logging_combined.log"
 SYSLOG_CONF="/etc/rsyslog.d/00-siem.conf"
 AUDITD_CONF="/etc/audit/auditd.conf"
@@ -14,11 +18,11 @@ AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
 AUDISP_CONF="/etc/audit/plugins.d/syslog.conf"
 AUDITD_LOG_FILE="/var/log/audit/audit.log"
 
-# Ensure log file is writable
+# Log dosyasının yazılabilir olduğundan emin olun
 touch "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot write to $LOG_FILE" >&2; exit 1; }
 chmod 640 "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot set permissions on $LOG_FILE" >&2; exit 1; }
 
-# Logging function with timestamp and error handling
+# Loglama fonksiyonu
 log() {
     local message
     message="$(date '+%Y-%m-%d %H:%M:%S') $1"
@@ -35,7 +39,7 @@ error_exit() {
     exit 1
 }
 
-# Check for root privileges and parameters
+# Root kontrolü ve parametreler
 [ "$EUID" -ne 0 ] && error_exit "This script must be run as root. Use sudo."
 [ $# -lt 2 ] && { echo "Usage: $0 <SIEM_IP> <SIEM_PORT>" >&2; exit 1; }
 
@@ -43,7 +47,7 @@ SIEM_IP="$1"
 SIEM_PORT="$2"
 log "Starting configuration - SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
 
-# Distribution detection
+# Dağıtım tespiti
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     DISTRO=$ID
@@ -61,7 +65,7 @@ esac
 
 log "Detected: $DISTRO $VERSION_ID, Syslog: $SYSLOG_FILE"
 
-# Package installation
+# Paket kurulumu
 install_packages() {
     log "Installing required packages..."
     case "$DISTRO" in
@@ -82,19 +86,18 @@ install_packages() {
 install_packages || error_exit "Package installation failed"
 log "Packages installed successfully"
 
-# Configure auditd
+# Configure auditd (auditd.conf dosyası man sayfasına uygun tutuluyor)
 configure_auditd() {
     log "Configuring auditd..."
     
-    # Backup and configure auditd.conf
+    # Auditd.conf dosyasında man sayfasında yer almayan 'log_facility' parametresi kullanılmaz.
+    # Mevcut auditd.conf dosyası yedeklenir fakat içeriği değiştirilmez.
     [ -f "$AUDITD_CONF" ] && cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDITD_CONF"
-    echo "log_facility = local3" > "$AUDITD_CONF" 2>/dev/null || error_exit "Failed to update $AUDITD_CONF"
-    log "auditd.conf updated with log_facility = local3."
+    log "Skipping auditd.conf modification as 'log_facility' is not a recognized parameter."
     
-    # Ensure the directory for audit rules exists
+    # Dizin oluşturma: audit kurallarının bulunduğu dizin mevcut değilse oluşturulur
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Failed to create directory for audit rules"
     
-    # Backup and configure audit rules
     [ -f "$AUDIT_RULES_FILE" ] && cp "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDIT_RULES_FILE"
     
     cat > "$AUDIT_RULES_FILE" << 'EOF' || error_exit "Failed to write audit rules"
@@ -167,7 +170,7 @@ configure_audisp() {
         error_exit "audisp-syslog not found"
     fi
     
-    # Ensure the directory for audisp config exists
+    # Dizin oluşturma: audisp yapılandırma dizini
     mkdir -p "$(dirname "$AUDISP_CONF")" || error_exit "Failed to create directory for audisp config"
     
     cat > "$AUDISP_CONF" << EOF || error_exit "Failed to configure audisp-syslog"
