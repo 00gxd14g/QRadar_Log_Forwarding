@@ -2,18 +2,26 @@
 import sys
 import re
 
-for line in sys.stdin:
-    line = line.strip()
-    if "type=EXECVE" in line:
-        # Tüm aX="değer" kısımlarını çıkar
-        args = re.findall(r'a\d+="([^"]+)"', line)
-        if args:
-            # Argümanları boşlukla birleştir
-            cmd = " ".join(args)
-            # Orijinal argümanları tek bir a0="cmd" ile değiştir
-            new_line = re.sub(r'(type=EXECVE.*?)( a\d+="[^"]+" )+', r'\1 a0="' + cmd + '" ', line)
-            print(f"MODIFIED {new_line}")
-        else:
-            print("OK")
-    else:
-        print("OK")
+def process_line(line):
+    # Check if the line contains an EXECVE message
+    if "type=EXECVE" not in line:
+        return line
+    # Find all argument fields: a0="...", a1="...", etc.
+    args = re.findall(r'a\d+="([^"]+)"', line)
+    if args:
+        # Combine all found arguments with a space
+        combined_command = " ".join(args)
+        # Remove all existing aX="..." fields from the line
+        new_line = re.sub(r'(a\d+="[^"]+"\s*)+', '', line)
+        # Append a single a0 field with the combined command
+        new_line = new_line.strip() + ' a0="' + combined_command + '"'
+        return "MODIFIED " + new_line
+    return line
+
+def main():
+    for line in sys.stdin:
+        processed_line = process_line(line.strip())
+        print(processed_line)
+
+if __name__ == '__main__':
+    main()
