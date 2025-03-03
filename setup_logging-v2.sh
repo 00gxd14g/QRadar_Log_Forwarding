@@ -20,7 +20,8 @@ chmod 640 "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot set permissions on $L
 
 # Logging function with timestamp and error handling
 log() {
-    local message="$(date '+%Y-%m-%d %H:%M:%S') $1"
+    local message
+    message="$(date '+%Y-%m-%d %H:%M:%S') $1"
     echo "$message" | tee -a "$LOG_FILE" >/dev/null 2>&1 || {
         echo "ERROR: Failed to write to log file: $message" >&2
         return 1
@@ -88,6 +89,10 @@ configure_auditd() {
     # Backup and configure auditd.conf
     [ -f "$AUDITD_CONF" ] && cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDITD_CONF"
     echo "log_facility = local3" > "$AUDITD_CONF" 2>/dev/null || error_exit "Failed to update $AUDITD_CONF"
+    log "auditd.conf updated with log_facility = local3."
+    
+    # Ensure the directory for audit rules exists
+    mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Failed to create directory for audit rules"
     
     # Backup and configure audit rules
     [ -f "$AUDIT_RULES_FILE" ] && cp "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDIT_RULES_FILE"
@@ -161,6 +166,9 @@ configure_audisp() {
     else
         error_exit "audisp-syslog not found"
     fi
+    
+    # Ensure the directory for audisp config exists
+    mkdir -p "$(dirname "$AUDISP_CONF")" || error_exit "Failed to create directory for audisp config"
     
     cat > "$AUDISP_CONF" << EOF || error_exit "Failed to configure audisp-syslog"
 active = yes
