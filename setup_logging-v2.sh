@@ -4,6 +4,9 @@ set -e
 # ------------------------------------------------------------------------------
 # Auditd ve Rsyslog Yapılandırma Scripti
 # (die.net man sayfalarına göre: auditd.conf(8), audispd(8), auditd(8))
+# Bu script execve olaylarında çalışan komutun tüm parametrelerini tek bir "command"
+# alanında birleştirerek SIEM'e gönderilmesini sağlar.
+#
 # Kullanım: sudo bash setup_logging.sh <SIEM_IP> <SIEM_PORT>
 # ------------------------------------------------------------------------------
 
@@ -12,7 +15,7 @@ LOG_FILE="/var/log/setup_logging.log"
 SYSLOG_CONF="/etc/rsyslog.d/00-siem.conf"
 AUDITD_CONF="/etc/audit/auditd.conf"
 AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
-AUDISP_CONF="/etc/audit/plugins.d/syslog.conf"
+AUDISP_CONF="/etc/audisp/plugins.d/syslog.conf"
 AUDITD_LOG_FILE="/var/log/audit/audit.log"
 
 # Log dosyasının yazılabilir olduğundan emin ol
@@ -87,16 +90,16 @@ log "Paketler başarıyla kuruldu"
 configure_auditd() {
     log "auditd yapılandırılıyor..."
     
-    # auditd.conf yedeği alınır ama log_facility değiştirilmez
+    # auditd.conf yedeği alınır, fakat "log_facility" değiştirilmez.
     [ -f "$AUDITD_CONF" ] && cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null || log "UYARI: $AUDITD_CONF yedeklenemedi"
-    log "auditd.conf dosyası 'log_facility' parametresi desteklemediğinden değiştirilmiyor."
+    log "auditd.conf dosyası 'log_facility' parametresi desteklemediğinden değiştirilmedi."
     
     # Audit kuralları dizini oluşturulur
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Audit kuralları dizini oluşturulamadı"
     
     [ -f "$AUDIT_RULES_FILE" ] && cp "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak" 2>/dev/null || log "UYARI: $AUDIT_RULES_FILE yedeklenemedi"
     
-    # Audit kuralları yazılır
+    # Basit audit kuralları (execve ve ilgili olaylar için)
     cat > "$AUDIT_RULES_FILE" << 'EOF' || error_exit "Audit kuralları yazılamadı"
 -D
 -b 8192
@@ -158,16 +161,28 @@ configure_rsyslog() {
     log "rsyslog yapılandırılıyor..."
     [ -f "$SYSLOG_CONF" ] && cp "$SYSLOG_CONF" "${SYSLOG_CONF}.bak" 2>/dev/null || log "UYARI: $SYSLOG_CONF yedeklenemedi"
     
-    cat > "$SYSLOG_CONF" << EOF || error_exit "rsyslog config yazılamadı"
-if \$syslogfacility-text == "kern" then {
+    cat > "$SYSLOG_CONF" << 'EOF' || error_exit "rsyslog config yazılamadı"
+# Kernel loglarını engelle
+if $syslogfacility-text == "kern" then {
     stop
 }
-if \$syslogfacility-text == "local3" then {
+# local3 facility'sinden gelen loglarda execve olaylarını işle
+if $syslogfacility-text == "local3" and $msg contains "type=EXECVE" then {
+    # Execve logundaki tüm a# alanlarını tek bir komut altında birleştir
+    set $.args = re_extract($msg, "a0=\"([^\"]*)\"(?: a[0-9]+=\"([^\"]*)\")*", 0);
+    if $.args != "" then {
+        # Komut ve argümanları birleştirip, command alanını oluştur
+        set $.cmd = re_replace($.args, "a[0-9]+=", "", "g");
+        set $.cmd = replace($.cmd, "\"", "", "g");
+        set $.cmd = trim($.cmd);
+        set $!command = $.cmd;
+        set $msg = "type=EXECVE command=\"" + $.cmd + "\"";
+    }
     action(type="omfwd" target="$SIEM_IP" port="$SIEM_PORT" protocol="tcp")
     stop
 }
 EOF
-    
+
     systemctl restart rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog yeniden başlatılamadı"
     systemctl enable rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog etkinleştirilemedi"
 }
@@ -181,12 +196,12 @@ diagnose_services() {
     systemctl is-active --quiet auditd || { log "UYARI: auditd çalışmıyor"; systemctl start auditd; }
     systemctl is-active --quiet rsyslog || { log "UYARI: rsyslog çalışmıyor"; systemctl start rsyslog; }
     
-    # Syslog testi
-    logger "Setup scriptinden test mesajı" || log "UYARI: logger komutu başarısız"
+    # Syslog testi: local3 facility kullanılarak test mesajı gönderiliyor.
+    logger -p local3.info "Test message from setup script" || log "UYARI: logger komutu başarısız"
     sleep 2
-    grep -q "test mesajı" "$SYSLOG_FILE" 2>/dev/null && log "Syslog testi başarılı" || log "UYARI: Syslog testi başarısız"
+    grep -q "Test message from setup script" "$SYSLOG_FILE" 2>/dev/null && log "Syslog testi başarılı" || log "UYARI: Syslog testi başarısız"
     
-    # Audit testi
+    # Audit testi: /etc/passwd dosyasında dokunma yapılarak test ediliyor.
     touch /etc/passwd || log "UYARI: Test touch başarısız"
     sleep 2
     ausearch -k passwd_modifications | grep -q "passwd" 2>/dev/null && log "Audit testi başarılı" || log "UYARI: Audit testi başarısız"
