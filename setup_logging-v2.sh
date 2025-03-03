@@ -2,50 +2,47 @@
 set -e
 
 # ------------------------------------------------------------------------------
-# Combined Auditd & Rsyslog Setup Script
-# (Die.net auditd.conf(8) man sayfasına göre güncellendi)
-# Bu sürümde auditd.conf dosyası, log_facility parametresi ile değiştirilmez.
-# Audit logları, audisp-syslog yapılandırması ile LOG_LOCAL3 kullanılarak syslog'a gönderilir.
-#
+# Auditd ve Rsyslog Yapılandırma Scripti
+# (die.net man sayfalarına göre: auditd.conf(8), audispd(8), auditd(8))
 # Kullanım: sudo bash setup_logging.sh <SIEM_IP> <SIEM_PORT>
 # ------------------------------------------------------------------------------
 
 # Global değişkenler
-LOG_FILE="/var/log/setup_logging_combined.log"
+LOG_FILE="/var/log/setup_logging.log"
 SYSLOG_CONF="/etc/rsyslog.d/00-siem.conf"
 AUDITD_CONF="/etc/audit/auditd.conf"
 AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
 AUDISP_CONF="/etc/audit/plugins.d/syslog.conf"
 AUDITD_LOG_FILE="/var/log/audit/audit.log"
 
-# Log dosyasının yazılabilir olduğundan emin olun
-touch "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot write to $LOG_FILE" >&2; exit 1; }
-chmod 640 "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot set permissions on $LOG_FILE" >&2; exit 1; }
+# Log dosyasının yazılabilir olduğundan emin ol
+touch "$LOG_FILE" 2>/dev/null || { echo "HATA: $LOG_FILE dosyasına yazılamıyor" >&2; exit 1; }
+chmod 640 "$LOG_FILE" 2>/dev/null || { echo "HATA: $LOG_FILE izinleri ayarlanamadı" >&2; exit 1; }
 
-# Loglama fonksiyonu
+# Zaman damgalı log fonksiyonu
 log() {
     local message
     message="$(date '+%Y-%m-%d %H:%M:%S') $1"
     echo "$message" | tee -a "$LOG_FILE" >/dev/null 2>&1 || {
-        echo "ERROR: Failed to write to log file: $message" >&2
+        echo "HATA: Log dosyasına yazma başarısız: $message" >&2
         return 1
     }
     echo "$message"
 }
 
 error_exit() {
-    log "ERROR: $1"
-    echo "ERROR: $1" >&2
+    log "HATA: $1"
+    echo "HATA: $1" >&2
     exit 1
 }
 
 # Root kontrolü ve parametreler
-[ "$EUID" -ne 0 ] && error_exit "This script must be run as root. Use sudo."
-[ $# -lt 2 ] && { echo "Usage: $0 <SIEM_IP> <SIEM_PORT>" >&2; exit 1; }
+[ "$EUID" -ne 0 ] && error_exit "Bu script root olarak çalıştırılmalı. sudo kullanın."
+[ $# -lt 2 ] && { echo "Kullanım: $0 <SIEM_IP> <SIEM_PORT>" >&2; exit 1; }
 
 SIEM_IP="$1"
 SIEM_PORT="$2"
-log "Starting configuration - SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
+log "Yapılandırma başlıyor - SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
 
 # Dağıtım tespiti
 if [ -f /etc/os-release ]; then
@@ -60,120 +57,88 @@ fi
 case "$DISTRO" in
     ubuntu|debian|kali) SYSLOG_FILE="/var/log/syslog";;
     rhel|centos|oracle) SYSLOG_FILE="/var/log/messages";;
-    *) error_exit "Unsupported distribution: $DISTRO";;
+    *) error_exit "Desteklenmeyen dağıtım: $DISTRO";;
 esac
 
-log "Detected: $DISTRO $VERSION_ID, Syslog: $SYSLOG_FILE"
+log "Tespit edildi: $DISTRO $VERSION_ID, Syslog: $SYSLOG_FILE"
 
 # Paket kurulumu
 install_packages() {
-    log "Installing required packages..."
+    log "Gerekli paketler kuruluyor..."
     case "$DISTRO" in
         ubuntu|debian|kali)
-            apt-get update >> "$LOG_FILE" 2>&1 || error_exit "apt-get update failed"
-            apt-get install -y auditd audispd-plugins rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed"
+            apt-get update >> "$LOG_FILE" 2>&1 || error_exit "apt-get update başarısız"
+            apt-get install -y auditd audispd-plugins rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Paket kurulumu başarısız"
             ;;
         rhel|centos|oracle)
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "dnf installation failed"
+                dnf install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "dnf kurulumu başarısız"
             else
-                yum install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "yum installation failed"
+                yum install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "yum kurulumu başarısız"
             fi
             ;;
     esac
 }
 
-install_packages || error_exit "Package installation failed"
-log "Packages installed successfully"
+install_packages || error_exit "Paket kurulumu başarısız"
+log "Paketler başarıyla kuruldu"
 
-# Configure auditd (auditd.conf dosyası man sayfasına uygun tutuluyor)
+# Auditd yapılandırması
 configure_auditd() {
-    log "Configuring auditd..."
+    log "auditd yapılandırılıyor..."
     
-    # Auditd.conf dosyasında man sayfasında yer almayan 'log_facility' parametresi kullanılmaz.
-    # Mevcut auditd.conf dosyası yedeklenir fakat içeriği değiştirilmez.
-    [ -f "$AUDITD_CONF" ] && cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDITD_CONF"
-    log "Skipping auditd.conf modification as 'log_facility' is not a recognized parameter."
+    # auditd.conf yedeği alınır ama log_facility değiştirilmez
+    [ -f "$AUDITD_CONF" ] && cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null || log "UYARI: $AUDITD_CONF yedeklenemedi"
+    log "auditd.conf dosyası 'log_facility' parametresi desteklemediğinden değiştirilmiyor."
     
-    # Dizin oluşturma: audit kurallarının bulunduğu dizin mevcut değilse oluşturulur
-    mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Failed to create directory for audit rules"
+    # Audit kuralları dizini oluşturulur
+    mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Audit kuralları dizini oluşturulamadı"
     
-    [ -f "$AUDIT_RULES_FILE" ] && cp "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak" 2>/dev/null || log "WARNING: Could not backup $AUDIT_RULES_FILE"
+    [ -f "$AUDIT_RULES_FILE" ] && cp "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak" 2>/dev/null || log "UYARI: $AUDIT_RULES_FILE yedeklenemedi"
     
-    cat > "$AUDIT_RULES_FILE" << 'EOF' || error_exit "Failed to write audit rules"
+    # Audit kuralları yazılır
+    cat > "$AUDIT_RULES_FILE" << 'EOF' || error_exit "Audit kuralları yazılamadı"
 -D
 -b 8192
 -f 1
 -i
 -w /etc/audit/ -p wa -k auditconfig
--w /etc/libaudit.conf -p wa -k auditconfig
--w /etc/audisp/ -p wa -k audispconfig
--w /sbin/auditctl -p x -k audittools
--w /sbin/auditd -p x -k audittools
--w /var/log/audit/ -k audit_log_access
 -w /etc/passwd -p wa -k passwd_modifications
 -w /etc/shadow -p wa -k passwd_modifications
--w /etc/group -p wa -k group_modifications
--w /etc/gshadow -p wa -k group_modifications
--w /etc/sudoers -p wa -k sudo_modifications
--w /etc/sudoers.d -p wa -k sudo_modifications
 -a always,exit -F arch=b64 -S execve -F euid=0 -k root_command
 -a always,exit -F arch=b32 -S execve -F euid=0 -k root_command
--a always,exit -F arch=b64 -S execve -F euid>=1000 -k user_command
--a always,exit -F arch=b32 -S execve -F euid>=1000 -k user_command
--a always,exit -F arch=b64 -S execve -k user_commands
--a always,exit -F arch=b32 -S execve -k user_commands
--a always,exit -F arch=b32 -S sethostname -S setdomainname -k network_modifications
 -a always,exit -F arch=b64 -S sethostname -S setdomainname -k network_modifications
+-a always,exit -F arch=b32 -S sethostname -S setdomainname -k network_modifications
 -w /etc/hosts -p wa -k network_modifications
--w /etc/network/ -p wa -k network_modifications
 -w /sbin/shutdown -p x -k system_state_modifications
--w /sbin/poweroff -p x -k system_state_modifications
--w /sbin/reboot -p x -k system_state_modifications
--w /sbin/halt -p x -k system_state_modifications
--a always,exit -F perm=x -F auid!=-1 -F path=/sbin/insmod -k kernel_modules
--a always,exit -F perm=x -F auid!=-1 -F path=/sbin/modprobe -k kernel_modules
--w /etc/modprobe.conf -p wa -k kernel_modules
--w /etc/pam.d/ -p wa -k pam_modifications
--w /var/log/faillog -p wa -k login_modifications
--w /var/log/lastlog -p wa -k login_modifications
 -w /bin/su -p x -k su_execution
 -w /usr/bin/sudo -p x -k sudo_execution
--w /tmp -p x -k suspect_activity
--w /var/tmp -p x -k suspect_activity
--w /usr/bin/wget -p x -k suspect_activity
--w /usr/bin/curl -p x -k suspect_activity
--w /bin/nc -p x -k suspect_activity
--w /usr/bin/ssh -p x -k suspect_activity
--a always,exit -F arch=b64 -S ptrace -k suspect_activity
--a always,exit -F arch=b32 -S ptrace -k suspect_activity
 -e 2
 EOF
 
-    chmod 640 "$AUDIT_RULES_FILE" 2>/dev/null || error_exit "Failed to set audit rules permissions"
+    chmod 640 "$AUDIT_RULES_FILE" 2>/dev/null || error_exit "Audit kuralları izinleri ayarlanamadı"
     
-    systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "Failed to restart auditd"
-    systemctl enable auditd >> "$LOG_FILE" 2>&1 || error_exit "Failed to enable auditd"
+    systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "auditd yeniden başlatılamadı"
+    systemctl enable auditd >> "$LOG_FILE" 2>&1 || error_exit "auditd etkinleştirilemedi"
 }
 
-configure_auditd || error_exit "Auditd configuration failed"
-log "auditd configured successfully"
+configure_auditd || error_exit "auditd yapılandırması başarısız"
+log "auditd başarıyla yapılandırıldı"
 
-# Configure audisp-syslog
+# audisp-syslog yapılandırması
 configure_audisp() {
-    log "Configuring audisp-syslog..."
+    log "audisp-syslog yapılandırılıyor..."
     if [ -f "/usr/sbin/audisp-syslog" ]; then
         AUDISP_SYSLOG_PATH="/usr/sbin/audisp-syslog"
     elif [ -f "/usr/lib/audisp/audisp-syslog" ]; then
         AUDISP_SYSLOG_PATH="/usr/lib/audisp/audisp-syslog"
     else
-        error_exit "audisp-syslog not found"
+        error_exit "audisp-syslog bulunamadı"
     fi
     
-    # Dizin oluşturma: audisp yapılandırma dizini
-    mkdir -p "$(dirname "$AUDISP_CONF")" || error_exit "Failed to create directory for audisp config"
+    mkdir -p "$(dirname "$AUDISP_CONF")" || error_exit "audisp config dizini oluşturulamadı"
     
-    cat > "$AUDISP_CONF" << EOF || error_exit "Failed to configure audisp-syslog"
+    cat > "$AUDISP_CONF" << EOF || error_exit "audisp-syslog yapılandırılamadı"
 active = yes
 direction = out
 path = $AUDISP_SYSLOG_PATH
@@ -182,64 +147,51 @@ args = LOG_LOCAL3
 format = string
 EOF
     
-    chmod 640 "$AUDISP_CONF" 2>/dev/null || error_exit "Failed to set audisp permissions"
+    chmod 640 "$AUDISP_CONF" 2>/dev/null || error_exit "audisp izinleri ayarlanamadı"
 }
 
-configure_audisp || error_exit "audisp configuration failed"
-log "audisp-syslog configured"
+configure_audisp || error_exit "audisp yapılandırması başarısız"
+log "audisp-syslog yapılandırıldı"
 
-# Configure rsyslog
+# rsyslog yapılandırması
 configure_rsyslog() {
-    log "Configuring rsyslog..."
-    [ -f "$SYSLOG_CONF" ] && cp "$SYSLOG_CONF" "${SYSLOG_CONF}.bak" 2>/dev/null || log "WARNING: Could not backup $SYSLOG_CONF"
+    log "rsyslog yapılandırılıyor..."
+    [ -f "$SYSLOG_CONF" ] && cp "$SYSLOG_CONF" "${SYSLOG_CONF}.bak" 2>/dev/null || log "UYARI: $SYSLOG_CONF yedeklenemedi"
     
-    cat > "$SYSLOG_CONF" << EOF || error_exit "Failed to write rsyslog config"
+    cat > "$SYSLOG_CONF" << EOF || error_exit "rsyslog config yazılamadı"
 if \$syslogfacility-text == "kern" then {
     stop
 }
 if \$syslogfacility-text == "local3" then {
-    if \$msg contains "type=EXECVE" then {
-        set \$regex = regex("a\\d+=\"([^\"]*)\"", \$msg);
-        set \$matches = \$regex.match;
-        set \$command = "";
-        for i from 1 to \$matches.count do {
-            set \$arg = \$matches[i][1];
-            if (\$command != "") then {
-                set \$command = \$command + " ";
-            }
-            set \$command = \$command + \$arg;
-        }
-        set \$msg = "type=EXECVE command=" + \$command;
-    }
     action(type="omfwd" target="$SIEM_IP" port="$SIEM_PORT" protocol="tcp")
     stop
 }
 EOF
     
-    systemctl restart rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Failed to restart rsyslog"
-    systemctl enable rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Failed to enable rsyslog"
+    systemctl restart rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog yeniden başlatılamadı"
+    systemctl enable rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog etkinleştirilemedi"
 }
 
-configure_rsyslog || error_exit "rsyslog configuration failed"
-log "rsyslog configured successfully"
+configure_rsyslog || error_exit "rsyslog yapılandırması başarısız"
+log "rsyslog başarıyla yapılandırıldı"
 
-# Diagnostic functions
+# Tanılama fonksiyonları
 diagnose_services() {
-    log "Running diagnostics..."
-    systemctl is-active --quiet auditd || { log "WARNING: auditd not running"; systemctl start auditd; }
-    systemctl is-active --quiet rsyslog || { log "WARNING: rsyslog not running"; systemctl start rsyslog; }
+    log "Tanılama yapılıyor..."
+    systemctl is-active --quiet auditd || { log "UYARI: auditd çalışmıyor"; systemctl start auditd; }
+    systemctl is-active --quiet rsyslog || { log "UYARI: rsyslog çalışmıyor"; systemctl start rsyslog; }
     
-    # Test logging
-    logger "Test message from setup script" || log "WARNING: logger command failed"
+    # Syslog testi
+    logger "Setup scriptinden test mesajı" || log "UYARI: logger komutu başarısız"
     sleep 2
-    grep -q "Test message" "$SYSLOG_FILE" 2>/dev/null && log "Syslog test successful" || log "WARNING: Syslog test failed"
+    grep -q "test mesajı" "$SYSLOG_FILE" 2>/dev/null && log "Syslog testi başarılı" || log "UYARI: Syslog testi başarısız"
     
-    # Test audit
-    touch /etc/passwd || log "WARNING: Test touch failed"
+    # Audit testi
+    touch /etc/passwd || log "UYARI: Test touch başarısız"
     sleep 2
-    ausearch -k passwd_modifications | grep -q "passwd" 2>/dev/null && log "Audit test successful" || log "WARNING: Audit test failed"
+    ausearch -k passwd_modifications | grep -q "passwd" 2>/dev/null && log "Audit testi başarılı" || log "UYARI: Audit testi başarısız"
 }
 
-diagnose_services || log "WARNING: Diagnostics encountered issues"
-log "Setup completed. Check $LOG_FILE for details"
+diagnose_services || log "UYARI: Tanılama sırasında sorunlar oluştu"
+log "Kurulum tamamlandı. Ayrıntılar için $LOG_FILE kontrol edin"
 exit 0
