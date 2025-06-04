@@ -66,8 +66,8 @@ fi
 LOCAL_SYSLOG_FILE="" # For diagnostics
 case "$DISTRO" in
     rhel|centos|oracle|almalinux|rocky) LOCAL_SYSLOG_FILE="/var/log/messages";;
-    ubuntu|debian|kali) 
-        log "WARNING: This script is optimized for RHEL/derivatives. Running on $DISTRO. Some RHEL-specific steps might not apply or work as expected."
+    ubuntu|debian|kali)
+        log "INFO: This script has RHEL-specific sections. Running on $DISTRO. Some RHEL-specific steps will be skipped or adapted."
         LOCAL_SYSLOG_FILE="/var/log/syslog"
         ;;
     *) error_exit "Unsupported distribution for RHEL-specific script: $DISTRO";;
@@ -76,16 +76,17 @@ log "Detected: $DISTRO $VERSION_ID_NUM, Main local syslog file for diagnostics: 
 
 # Package installation
 install_packages() {
-    log "Installing required packages (audit, rsyslog, python3, rsyslog-omprog)..."
+    log "Installing required packages..."
     case "$DISTRO" in
         rhel|centos|oracle|almalinux|rocky)
+            log "Attempting to install: audit, rsyslog, python3, rsyslog-omprog (for RHEL/derivatives)"
             if command -v dnf >/dev/null 2>&1; then # RHEL 8, 9 and derivatives
-                dnf install -y audit rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (dnf). Ensure rsyslog-omprog is available."
+                dnf install -y audit rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (dnf). Ensure rsyslog-omprog is available or part of rsyslog."
             else # RHEL 7 and derivatives
                 if ! yum list installed epel-release >/dev/null 2>&1 && [[ "$VERSION_ID_NUM" == 7* ]]; then
                     log "EPEL repository is not installed on RHEL 7. Attempting to install EPEL release for Python 3..."
                     yum install -y epel-release >> "$LOG_FILE" 2>&1 || log "WARNING: Failed to install EPEL release. Python 3 or rsyslog-omprog might not be available."
-                    yum makecache fast >> "$LOG_FILE" 2>&1 
+                    yum makecache fast >> "$LOG_FILE" 2>&1
                 fi
                 yum install -y audit rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || {
                     log "ERROR: Package installation failed with YUM. Python 3 or rsyslog-omprog might require EPEL (epel-release) on RHEL 7 or a specific rsyslog version. Check $LOG_FILE."
@@ -93,9 +94,11 @@ install_packages() {
                 }
             fi
             ;;
-        ubuntu|debian|kali) # Added for completeness if run on these distros
+        ubuntu|debian|kali)
+             log "Attempting to install: auditd, audispd-plugins, rsyslog, python3 (for Debian/Ubuntu/Kali)"
              apt-get update -y >> "$LOG_FILE" 2>&1 || error_exit "apt-get update failed"
-             apt-get install -y auditd audispd-plugins rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (apt-get). Ensure rsyslog-omprog is available."
+             # rsyslog-omprog is not typically a separate package on Debian/Ubuntu; omprog module is part of rsyslog
+             apt-get install -y auditd audispd-plugins rsyslog python3 >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (apt-get)."
             ;;
     esac
     log "Packages installed successfully."
@@ -147,19 +150,11 @@ deploy_python_script
 # Configure auditd
 configure_auditd() {
     log "Configuring auditd..."
-    # Backup auditd.conf (original script skipped direct mods, which is fine)
-    # if [ -f "/etc/audit/auditd.conf" ]; then
-    #     cp -p "/etc/audit/auditd.conf" "/etc/audit/auditd.conf.bak.$(date +%F_%T)" 2>/dev/null || log "WARNING: Could not back up /etc/audit/auditd.conf"
-    # fi
-    # log "Skipping direct modifications to /etc/audit/auditd.conf." # Retain this if no changes needed
-    
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Failed to create audit rules directory $(dirname "$AUDIT_RULES_FILE")"
     if [ -f "$AUDIT_RULES_FILE" ];then
         cp -p "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak.$(date +%F_%T)" 2>/dev/null || log "WARNING: Could not back up $AUDIT_RULES_FILE"
     fi
     
-    # Corrected and comprehensive audit rules for RHEL v2
-    # This addresses the augenrules error by using auid!=-1 and consistent keying.
     cat > "$AUDIT_RULES_FILE" << 'EOF'
 -D
 -b 8192
@@ -201,7 +196,7 @@ configure_auditd() {
 -a always,exit -F path=/sbin/modprobe -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_mod_modprobe
 -w /etc/modprobe.conf -p wa -k kernel_mod_conf_changes
 -w /etc/modprobe.d/ -p wa -k kernel_mod_conf_d_changes
-# Executions (Corrected keys for consistency and to avoid augenrules issue)
+# Executions
 -a always,exit -F arch=b64 -S execve -F euid=0 -k root_execve
 -a always,exit -F arch=b32 -S execve -F euid=0 -k root_execve
 -a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_execve
@@ -213,7 +208,7 @@ configure_auditd() {
 -a always,exit -F arch=b32 -S setuid -S setgid -S seteuid -S setegid -S setreuid -S setregid -S setresuid -S setresgid -k priv_escalation_syscalls
 -a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k priv_perm_change_exec_sgid
 -a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k priv_perm_change_exec_sgid
-# Suspicious Utilities (examples, can be noisy)
+# Suspicious Utilities
 -w /usr/bin/wget -p x -k susp_wget_usage
 -w /usr/bin/curl -p x -k susp_curl_usage
 -w /bin/nc -p x -k susp_netcat_usage
@@ -222,11 +217,10 @@ configure_auditd() {
 EOF
     chmod 640 "$AUDIT_RULES_FILE" || error_exit "Failed to set permissions on $AUDIT_RULES_FILE"
     
-    log "Loading audit rules via augenrules..."
+    log "Loading audit rules..."
     if command -v augenrules >/dev/null 2>&1; then
         augenrules --load >> "$LOG_FILE" 2>&1 || error_exit "augenrules --load failed. Check $LOG_FILE and audit daemon status for errors related to $AUDIT_RULES_FILE."
     else
-        # Fallback if augenrules isn't there, though it should be on RHEL systems
         auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1 || error_exit "auditctl -R $AUDIT_RULES_FILE failed. augenrules is highly recommended for persistent rule loading."
     fi
     log "Audit rules loaded."
@@ -242,15 +236,20 @@ configure_auditd
 configure_audisp() {
     log "Configuring audisp-syslog plugin to use LOG_LOCAL3..."
     local audisp_syslog_binary_path=""
-    if [ -x "/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/sbin/audisp-syslog"; 
-    elif [ -x "/usr/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/usr/sbin/audisp-syslog"; # More common on Debian-likes
-    else error_exit "audisp-syslog binary not found in /sbin or /usr/sbin."; fi
+    # Adjusted path preference for RHEL vs Debian
+    if [[ "$DISTRO" == "rhel" || "$DISTRO" == "centos" || "$DISTRO" == "oracle" || "$DISTRO" == "almalinux" || "$DISTRO" == "rocky" ]]; then
+        if [ -x "/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/sbin/audisp-syslog"; fi
+    fi
+    if [ -z "$audisp_syslog_binary_path" ] && [ -x "/usr/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/usr/sbin/audisp-syslog"; fi
     
+    if [ -z "$audisp_syslog_binary_path" ]; then error_exit "audisp-syslog binary not found in /sbin or /usr/sbin."; fi
+    log "Using audisp-syslog binary at: $audisp_syslog_binary_path"
+
     mkdir -p "$(dirname "$AUDISP_PLUGIN_CONF_FILE")" || error_exit "Failed to create audisp config directory $(dirname "$AUDISP_PLUGIN_CONF_FILE")"
     cat > "$AUDISP_PLUGIN_CONF_FILE" << EOF || error_exit "Failed to write audisp-syslog configuration to $AUDISP_PLUGIN_CONF_FILE"
 active = yes
 direction = out
-path = $audisp_syslog_binary_path 
+path = $audisp_syslog_binary_path
 type = always
 args = LOG_LOCAL3
 format = string
@@ -263,7 +262,7 @@ EOF
  
 configure_audisp
  
-# Configure rsyslog (Rsyslog logic is sound from original rhel script)
+# Configure rsyslog
 configure_rsyslog() {
     log "Configuring rsyslog for SIEM (local3 with omprog for EXECVE)..."
     if [ -f "$SYSLOG_CONF_OUTPUT_FILE" ]; then
@@ -271,41 +270,28 @@ configure_rsyslog() {
     fi
     
     cat > "$SYSLOG_CONF_OUTPUT_FILE" << EOF || error_exit "Failed to write rsyslog configuration to $SYSLOG_CONF_OUTPUT_FILE"
-# Load omprog module for program-based output
 module(load="omprog")
 
-# Rule to stop processing kernel messages further
 if \$syslogfacility-text == "kern" then {
     stop
 }
 
-# Process audit logs from local3 facility
 if \$syslogfacility-text == "local3" then {
-    # For EXECVE messages, transform them using the Python script
     if \$msg contains "type=EXECVE" then {
         action(
             type="omprog"
             binary="$CONCAT_EXECVE_SCRIPT_PATH"
-            name="TransformExecve_RHEL" # Unique name for action
-            # template="" # Use default template (the message itself)
-            # output="/var/log/omprog_execve_rhel_debug.log" # Uncomment for debugging omprog output
-            # useTransactions="on" # Can provide atomicity but may impact performance; test if needed. Default off.
-            # confirmMessages="off" 
-            # reportFailures="on" 
+            name="TransformExecve_RHEL"
         )
     }
-    # Forward ALL local3 messages (original or transformed EXECVE) to SIEM
     action(
         type="omfwd"
         target="$SIEM_IP"
         port="$SIEM_PORT"
         protocol="tcp"
         name="ForwardAuditToSIEM_RHEL_local3"
-        # TCP specific parameters (optional)
-        # RebindInterval="10000"
-        # KeepAlive="on"
     )
-    stop # Stop processing local3 messages further
+    stop 
 }
 EOF
     
@@ -329,7 +315,6 @@ configure_rsyslog
 configure_rhel_specifics() {
     if [[ "$DISTRO" == "rhel" || "$DISTRO" == "centos" || "$DISTRO" == "oracle" || "$DISTRO" == "almalinux" || "$DISTRO" == "rocky" ]]; then
         log "Performing RHEL-specific configurations (SELinux, Firewall)..."
-        # SELinux configuration for rsyslog network connect
         if command -v getsebool >/dev/null 2>&1 && command -v setsebool >/dev/null 2>&1; then
             local selinux_bool_syslog_net="syslogd_can_network_connect"
             log "Checking SELinux boolean $selinux_bool_syslog_net..."
@@ -340,35 +325,27 @@ configure_rhel_specifics() {
                 if setsebool -P "$selinux_bool_syslog_net" on; then
                     log "SELinux: Successfully enabled $selinux_bool_syslog_net persistently."
                 else
-                    log "WARNING: Failed to set SELinux boolean $selinux_bool_syslog_net. Manual SELinux config (setsebool -P $selinux_bool_syslog_net on) might be needed for rsyslog network forwarding."
+                    log "WARNING: Failed to set SELinux boolean $selinux_bool_syslog_net. Manual SELinux config (setsebool -P $selinux_bool_syslog_net on) might be needed."
                 fi
             fi
-            # SELinux for omprog execution (Python script)
-            # This might require specific policy if script is denied. Common contexts are /usr/bin, /usr/sbin.
-            # /usr/local/bin might have different default labeling.
-            # Check 'ls -Z $CONCAT_EXECVE_SCRIPT_PATH' and 'ausearch -m avc -ts recent' if omprog fails.
-            # A common boolean for allowing daemons to execute scripts is 'daemons_enable_cluster_mode', but this is broad.
-            # Custom policy or 'chcon -t syslogd_script_exec_t $CONCAT_EXECVE_SCRIPT_PATH' (if type exists) might be needed.
-            log "SELinux: If omprog execution of $CONCAT_EXECVE_SCRIPT_PATH is denied, check 'ausearch -m avc -ts recent'. The script might need 'chcon -t syslogd_script_exec_t $CONCAT_EXECVE_SCRIPT_PATH' or a custom SELinux policy module."
+            log "SELinux: For omprog execution of $CONCAT_EXECVE_SCRIPT_PATH, check 'ausearch -m avc -ts recent' if issues occur. Consider 'chcon -t syslogd_script_exec_t $CONCAT_EXECVE_SCRIPT_PATH' or custom policy."
         else
             log "SELinux: getsebool/setsebool commands not found. Skipping automatic SELinux boolean check."
         fi
 
-        # Firewalld configuration
         if command -v firewall-cmd >/dev/null 2>&1; then
             if systemctl is-active --quiet firewalld; then
                 log "Firewalld is active. Attempting to add rule for SIEM TCP port $SIEM_PORT..."
-                if firewall-cmd --query-port="$SIEM_PORT/tcp" --permanent >/dev/null 2>&1; then
-                    log "Firewalld: Port $SIEM_PORT/tcp is already in permanent configuration."
-                else
+                if ! firewall-cmd --query-port="$SIEM_PORT/tcp" --permanent >/dev/null 2>&1; then
                     firewall-cmd --permanent --add-port="$SIEM_PORT/tcp" >> "$LOG_FILE" 2>&1 || log "WARNING: firewall-cmd --permanent --add-port failed."
-                fi
-                # Reload is needed to apply permanent rules to runtime, but also to activate newly added permanent rule.
-                firewall-cmd --reload >> "$LOG_FILE" 2>&1 || log "WARNING: firewall-cmd --reload failed. Rule might not be active yet. Check 'firewall-cmd --list-ports'."
-                if firewall-cmd --query-port="$SIEM_PORT/tcp" >/dev/null 2>&1; then
-                    log "Firewalld: Port $SIEM_PORT/tcp is now active in the running configuration."
                 else
-                    log "WARNING: Firewalld: Port $SIEM_PORT/tcp may NOT be active. Check 'firewall-cmd --list-ports' and firewall logs."
+                     log "Firewalld: Port $SIEM_PORT/tcp is already in permanent configuration."
+                fi
+                firewall-cmd --reload >> "$LOG_FILE" 2>&1 || log "WARNING: firewall-cmd --reload failed."
+                if firewall-cmd --query-port="$SIEM_PORT/tcp" >/dev/null 2>&1; then
+                    log "Firewalld: Port $SIEM_PORT/tcp is now active."
+                else
+                    log "WARNING: Firewalld: Port $SIEM_PORT/tcp may NOT be active. Check 'firewall-cmd --list-ports'."
                 fi
             else
                 log "Firewalld service is not active. Skipping firewalld rule addition."
@@ -376,6 +353,8 @@ configure_rhel_specifics() {
         else
             log "Firewalld (firewall-cmd) not found. Skipping automatic firewall configuration for port $SIEM_PORT/tcp."
         fi
+    else
+        log "Skipping RHEL-specific configurations as DISTRO is $DISTRO."
     fi
 }
 
@@ -387,16 +366,16 @@ diagnose_services() {
     if systemctl is-active --quiet auditd; then log "Auditd service is active."; else log "ERROR: auditd is not running."; fi
     if systemctl is-active --quiet rsyslog; then log "Rsyslog service is active."; else log "ERROR: rsyslog is not running."; fi
     
-    local test_msg_content="Test RHEL audit-like message from setup-loggingv2-rhel.sh diagnostics $(date)"
+    local test_msg_content="Test RHEL-v2 audit-like message from $(hostname) diagnostics $(date)" # Added hostname
     log "Sending test message to local3 facility: '$test_msg_content'"
     logger -p local3.info "$test_msg_content" || log "WARNING: logger command failed to send to local3."
     sleep 3
 
-    log "Checking if test message reached local system log ($LOCAL_SYSLOG_FILE) via local3..."
+    log "Checking if test message for local3 reached local system log ($LOCAL_SYSLOG_FILE)..."
     if grep -Fq "$test_msg_content" "$LOCAL_SYSLOG_FILE"; then
-        log "Syslog test event (local3 to $LOCAL_SYSLOG_FILE) found."
+        log "Syslog test event (local3 to $LOCAL_SYSLOG_FILE) found. (Note: 'stop' in rsyslog config might prevent this if other rules for local3 exist before it)."
     else
-        log "Syslog test event for local3 NOT found in $LOCAL_SYSLOG_FILE. This is EXPECTED if 'stop' is used after forwarding in rsyslog. Check SIEM."
+        log "Syslog test event for local3 NOT found in $LOCAL_SYSLOG_FILE. This can be EXPECTED if 'stop' is used after forwarding in rsyslog config for local3. Primarily check SIEM for this message."
     fi
     
     log "Touching /etc/passwd to trigger 'iam_passwd_changes' audit event..."
@@ -407,14 +386,14 @@ diagnose_services() {
     if ausearch --start today -k iam_passwd_changes --raw | grep -q 'type=SYSCALL.*key="iam_passwd_changes"'; then
         log "Audit event for 'iam_passwd_changes' FOUND in local audit logs (ausearch)."
     else
-        log "WARNING: Audit event 'iam_passwd_changes' NOT found via ausearch. Check audit rules and auditd service."
+        log "WARNING: Audit event 'iam_passwd_changes' NOT found via ausearch. Check audit rules and auditd service status and logs."
     fi
     log "To verify SIEM forwarding: sudo tcpdump -i any host $SIEM_IP and port $SIEM_PORT -A -n"
-    log "Check for concat_execve.py errors in rsyslog logs or the omprog debug log file (if enabled in rsyslog config)."
+    log "Check for concat_execve.py errors in rsyslog logs (e.g., /var/log/syslog or /var/log/messages) or the omprog debug log file (if enabled in rsyslog config)."
 }
  
 diagnose_services
-log "Setup script (RHEL v2) finished."
+log "Setup script (RHEL v2 - adapted for $DISTRO) finished."
 log "Review $LOG_FILE for detailed execution logs and any warnings."
 log "Ensure the SIEM ($SIEM_IP:$SIEM_PORT) is configured to receive TCP syslog messages from facility local3."
 exit 0
