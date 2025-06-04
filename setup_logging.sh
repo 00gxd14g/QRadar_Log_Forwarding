@@ -1,15 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 
+# ------------------------------------------------------------------------------  
+# Auditd ve Rsyslog Yapılandırma Scripti (Eksik dosyaları otomatik kurar/oluşturur)
+# - /etc/audit/auditd.conf dosyasını yedekler (değiştirmez).
+# - Verilen audit kurallarını /etc/audit/rules.d/audit.rules dosyasına yazar.
+# - audisp-syslog eklentisini /etc/audisp/plugins.d/syslog.conf içinde yapılandırır.
+#   Eğer audisp-syslog yoksa, dağıtıma göre gerekli paketi kurmaya çalışır.
+# - /etc/rsyslog.d/00-siem.conf ile omprog modülü aracılığıyla EXECVE kayıtlarını
+#   concat_execve.py betiğine yönlendirir ve SIEM sunucusuna TCP üzerinden iletir.
+# - concat_execve.py yoksa, basit bir placeholder Python betiği oluşturur.
+# - Betik, adım adım hataları /var/log/setup_logging.log dosyasına kaydeder.
 # ------------------------------------------------------------------------------ 
-# Auditd ve Rsyslog Yapılandırma Scripti 
-# - /etc/audit/auditd.conf dosyasını yedekler (değiştirmez). 
-# - Verilen audit kurallarını /etc/audit/rules.d/audit.rules dosyasına yazar. 
-# - audisp-syslog eklentisini /etc/audisp/plugins.d/syslog.conf içinde yapılandırır. 
-# - /etc/rsyslog.d/00-siem.conf ile omprog modülü aracılığıyla EXECVE kayıtlarını 
-#   concat_execve.py betiğine yönlendirir ve SIEM sunucusuna TCP üzerinden iletir. 
-# - Betik, adım adım hataları /var/log/setup_logging.log dosyasına kaydeder. 
-# ------------------------------------------------------------------------------ 
+# SetupLogging v1
 
 # Global Değişkenler
 LOG_FILE="/var/log/setup_logging.log"
@@ -19,7 +22,7 @@ AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
 AUDISP_CONF="/etc/audisp/plugins.d/syslog.conf"
 CONCAT_SCRIPT="/usr/local/bin/concat_execve.py"
 
-# Usage Kontrolü
+# Kullanım Kontrolü
 if [ "$#" -lt 2 ]; then
     echo "Kullanım: $0 <SIEM_IP> <SIEM_PORT>" >&2
     exit 1
@@ -28,7 +31,7 @@ fi
 SIEM_IP="$1"
 SIEM_PORT="$2"
 
-# Log Dosyası Oluşturma ve İzin Kontrolü
+# Log Dosyasını Oluştur ve İzin Ver
 touch "$LOG_FILE" 2>/dev/null || { echo "ERROR: $LOG_FILE yazılamıyor." >&2; exit 1; }
 chmod 640 "$LOG_FILE" 2>/dev/null || { echo "ERROR: $LOG_FILE izin ayarlanamadı." >&2; exit 1; }
 
@@ -50,7 +53,7 @@ error_exit() {
     exit 1
 }
 
-# Sudo/Root Kontrolü
+# Root Kontrolü
 if [ "$EUID" -ne 0 ]; then
     error_exit "Bu script root (sudo) ile çalıştırılmalı."
 fi
@@ -83,23 +86,25 @@ esac
 log "Dağıtım: $DISTRO $VERSION_ID | Yerel syslog dosyası: $SYSLOG_FILE"
 
 # -----------------------------------------------------------------------------
-# 1) Gerekli Paketlerin Kurulumu
+# 1) Gerekli Paketleri Kur (auditd, rsyslog, audisp plugin vs.)
 # -----------------------------------------------------------------------------
 install_packages() {
     log "Gerekli paketler kuruluyor..."
     case "$DISTRO" in
         ubuntu|debian|kali)
             apt-get update >> "$LOG_FILE" 2>&1 || error_exit "apt-get update başarısız."
-            DEBIAN_FRONTEND=noninteractive apt-get install -y auditd audispd-plugins rsyslog >> "$LOG_FILE" 2>&1 \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                auditd audispd-plugins rsyslog >> "$LOG_FILE" 2>&1 \
                 || error_exit "Paket kurulumu (auditd, audispd-plugins, rsyslog) başarısız."
             ;;
         rhel|centos|ol|oracle)
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "dnf ile paket kurulumu başarısız."
+                dnf install -y audit rsyslog audit-plugins >> "$LOG_FILE" 2>&1 \
+                    || error_exit "dnf ile paket kurulumu başarısız."
             else
-                yum install -y audit rsyslog >> "$LOG_FILE" 2>&1 || error_exit "yum ile paket kurulumu başarısız."
+                yum install -y audit rsyslog audit-plugins >> "$LOG_FILE" 2>&1 \
+                    || error_exit "yum ile paket kurulumu başarısız."
             fi
-            # RHEL/CentOS’da audispd-plugins paketi zaten audit paketinin bir parçası olarak gelir.
             ;;
     esac
     log "Paketler başarıyla kuruldu."
@@ -111,16 +116,16 @@ install_packages
 # 2) auditd Yapılandırması
 # -----------------------------------------------------------------------------
 configure_auditd() {
-    log "auditd yapılandırması başlıyor..."
+    log "auditd yapılandırma adımları başlıyor..."
 
-    # 2.1) auditd.conf Yedekle (Üzerine dokunmuyoruz)
+    # 2.1) auditd.conf Yedeği (Değiştirmiyoruz)
     if [ -f "$AUDITD_CONF" ]; then
         cp "$AUDITD_CONF" "${AUDITD_CONF}.bak" 2>/dev/null \
             || log "WARNING: $AUDITD_CONF yedeği oluşturulamadı."
         log "$AUDITD_CONF yedeklendi -> ${AUDITD_CONF}.bak"
     fi
 
-    # 2.2) audit.rules Dosyasının Bulunduğu Dizini Oluştur ve Yedekle
+    # 2.2) Kurallar Dizini ve Yedeği
     audit_dir="$(dirname "$AUDIT_RULES_FILE")"
     mkdir -p "$audit_dir" || error_exit "Audit kurallar dizini oluşturulamadı: $audit_dir"
 
@@ -231,19 +236,19 @@ EOF
 
     chmod 640 "$AUDIT_RULES_FILE" 2>/dev/null || error_exit "Audit kuralları dosyasına chmod 640 uygulanamadı."
 
-    # 2.4) Kuralları Yükleme
+    # 2.4) Kuralları Yükle (augenrules veya auditd restart)
     if command -v augenrules >/dev/null 2>&1; then
         log "augenrules bulundu; kurallar augenrules --load ile yüklenecek."
-        augenrules --load >> "$LOG_FILE" 2>&1 || {
+        if ! augenrules --load >> "$LOG_FILE" 2>&1; then
             log "WARNING: augenrules --load başarısız. auditd servisi restart edilecek."
             systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "auditd restart başarısız."
-        }
+        fi
     else
         log "augenrules komutu yok; auditd servisi restart edilecek."
         systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "auditd restart başarısız."
     fi
 
-    # 2.5) auditd servisini enable
+    # 2.5) auditd servisini enable et
     systemctl enable auditd >> "$LOG_FILE" 2>&1 || error_exit "auditd enable yapılamadı."
 
     log "auditd yapılandırma adımları tamamlandı."
@@ -252,12 +257,12 @@ EOF
 configure_auditd
 
 # -----------------------------------------------------------------------------
-# 3) audisp-syslog Yapılandırması
+# 3) audisp-syslog Yapılandırması (varsa; yoksa paket kurulumunu dener)
 # -----------------------------------------------------------------------------
 configure_audisp() {
-    log "audisp-syslog yapılandırması başlıyor..."
+    log "audisp-syslog yapılandırma adımları başlıyor..."
 
-    # 3.1) audisp-syslog yolunu tespit et
+    # 3.1) audisp-syslog ikili dosyası arama
     if [ -f "/sbin/audisp-syslog" ]; then
         AUDISP_SYSLOG_PATH="/sbin/audisp-syslog"
     elif [ -f "/usr/sbin/audisp-syslog" ]; then
@@ -265,22 +270,57 @@ configure_audisp() {
     elif [ -f "/usr/lib/audisp/audisp-syslog" ]; then
         AUDISP_SYSLOG_PATH="/usr/lib/audisp/audisp-syslog"
     else
-        error_exit "audisp-syslog ikili dosyası bulunamadı. (Kurulu değil mi?)"
+        log "WARNING: audisp-syslog ikili dosyası bulunamadı. Paket kurulacak..."
+        # Eksikse paketi kurmaya çalış
+        case "$DISTRO" in
+            ubuntu|debian|kali)
+                log "Ubuntu/Debian: audispd-plugins paketi kuruluyor..."
+                apt-get update >> "$LOG_FILE" 2>&1 || log "WARNING: apt-get update başarısız."
+                apt-get install -y audispd-plugins >> "$LOG_FILE" 2>&1 \
+                    && log "audispd-plugins kuruldu." \
+                    || log "WARNING: audispd-plugins kurulamadı."
+                ;;
+            rhel|centos|ol|oracle)
+                log "RHEL/CentOS: audit-plugins paketi kuruluyor..."
+                if command -v dnf >/dev/null 2>&1; then
+                    dnf install -y audit-plugins >> "$LOG_FILE" 2>&1 \
+                        && log "audit-plugins kuruldu." \
+                        || log "WARNING: audit-plugins kurulamadı."
+                else
+                    yum install -y audit-plugins >> "$LOG_FILE" 2>&1 \
+                        && log "audit-plugins kuruldu." \
+                        || log "WARNING: audit-plugins kurulamadı."
+                fi
+                ;;
+        esac
+
+        # Kurulum sonrası tekrar kontrol et
+        if [ -f "/sbin/audisp-syslog" ]; then
+            AUDISP_SYSLOG_PATH="/sbin/audisp-syslog"
+        elif [ -f "/usr/sbin/audisp-syslog" ]; then
+            AUDISP_SYSLOG_PATH="/usr/sbin/audisp-syslog"
+        elif [ -f "/usr/lib/audisp/audisp-syslog" ]; then
+            AUDISP_SYSLOG_PATH="/usr/lib/audisp/audisp-syslog"
+        else
+            log "WARNING: audisp-syslog hâlâ bulunamadı; devam ediliyor (uyarıyla)."
+            AUDISP_SYSLOG_PATH=""
+        fi
     fi
 
-    # 3.2) audisp konfigürasyon dizinini oluştur
+    # 3.2) audisp dizinini oluştur
     audisp_dir="$(dirname "$AUDISP_CONF")"
     mkdir -p "$audisp_dir" || error_exit "audisp config dizini oluşturulamadı: $audisp_dir"
 
-    # 3.3) Var olanı yedekle
+    # 3.3) Mevcut varsa yedeğini al
     if [ -f "$AUDISP_CONF" ]; then
         cp "$AUDISP_CONF" "${AUDISP_CONF}.bak" 2>/dev/null \
             || log "WARNING: $AUDISP_CONF yedeği oluşturulamadı."
         log "$AUDISP_CONF yedeklendi -> ${AUDISP_CONF}.bak"
     fi
 
-    # 3.4) Konfigürasyonu yaz
-    cat > "$AUDISP_CONF" << EOF || error_exit "audisp config yazılamadı."
+    # 3.4) Konfigürasyonu yaz (path boş ise, comment satırı ekle)
+    if [ -n "$AUDISP_SYSLOG_PATH" ]; then
+        cat > "$AUDISP_CONF" << EOF || error_exit "audisp config yazılamadı."
 active = yes
 direction = out
 path = $AUDISP_SYSLOG_PATH
@@ -288,42 +328,72 @@ type = always
 args = LOG_LOCAL3
 format = string
 EOF
+        log "audisp-syslog config yazıldı: path = $AUDISP_SYSLOG_PATH"
+    else
+        cat > "$AUDISP_CONF" << EOF || error_exit "audisp config yazılamadı."
+# audisp-syslog ikili dosyası bulunamadı; plugin devre dışı bırakıldı.
+active = no
+direction = out
+path = 
+type = always
+args = LOG_LOCAL3
+format = string
+EOF
+        log "WARNING: audisp-syslog bulunamadığı için plugin devre dışı bırakıldı."
+    fi
 
     chmod 640 "$AUDISP_CONF" 2>/dev/null || error_exit "audisp config chmod 640 yapılamadı."
-
-    log "audisp-syslog yapılandırması tamamlandı."
+    log "audisp yapılandırma adımları tamamlandı."
 }
 
 configure_audisp
 
 # -----------------------------------------------------------------------------
-# 4) concat_execve.py Dosyasının Kontrolü
+# 4) concat_execve.py Dosyasını Kontrol Et, Yoksa Oluştur
 # -----------------------------------------------------------------------------
-check_concat_script() {
-    log "concat_execve.py varlığı ve izinleri kontrol ediliyor..."
+check_or_create_concat_script() {
+    log "concat_execve.py varlığı kontrol ediliyor..."
     if [ ! -f "$CONCAT_SCRIPT" ]; then
-        error_exit "$CONCAT_SCRIPT bulunamadı. Lütfen concat_execve.py betiğini bu dizine koyun."
+        log "concat_execve.py bulunamadı. Basit placeholder oluşturuluyor..."
+        cat > "$CONCAT_SCRIPT" << 'EOF' || error_exit "concat_execve.py oluşturulamadı."
+#!/usr/bin/env python3
+import sys
+
+"""
+Bu basit placeholder betiği, STDIN'den aldığı her satırı (syslog) 
+STDOUT'a (rsyslog) olduğu gibi döndürür. 
+Kendi ortamınıza uygun şekilde EXECVE mesajından a0 alanı oluşturma 
+mantığını buraya ekleyebilirsiniz.
+"""
+for line in sys.stdin:
+    # Burada “line” zaten tam formattaki syslog satırıdır.
+    # İhtiyacınıza göre ayrıştırıp a0 alanını oluşturabilirsiniz.
+    sys.stdout.write(line)
+EOF
+        chmod +x "$CONCAT_SCRIPT" || error_exit "concat_execve.py chmod +x yapılamadı."
+        log "concat_execve.py placeholder oluşturuldu ve çalıştırma izni verildi."
+    else
+        chmod +x "$CONCAT_SCRIPT" 2>/dev/null || error_exit "concat_execve.py chmod +x yapılamadı."
+        log "concat_execve.py zaten mevcut; chmod +x uygulandı."
     fi
-    chmod +x "$CONCAT_SCRIPT" 2>/dev/null || error_exit "$CONCAT_SCRIPT üzerinde çalıştırma izni verilemedi."
-    log "concat_execve.py bulundu ve chmod +x verildi."
 }
 
-check_concat_script
+check_or_create_concat_script
 
 # -----------------------------------------------------------------------------
 # 5) rsyslog Yapılandırması
 # -----------------------------------------------------------------------------
 configure_rsyslog() {
-    log "rsyslog yapılandırması başlıyor..."
+    log "rsyslog yapılandırma adımları başlıyor..."
 
-    # 5.1) Var olan rsyslog konfigünü yedekle
+    # 5.1) Mevcut konfig yedeği
     if [ -f "$SYSLOG_CONF" ]; then
         cp "$SYSLOG_CONF" "${SYSLOG_CONF}.bak" 2>/dev/null \
             || log "WARNING: $SYSLOG_CONF yedeği oluşturulamadı."
         log "$SYSLOG_CONF yedeklendi -> ${SYSLOG_CONF}.bak"
     fi
 
-    # 5.2) Yeni konfigürasyonu yaz (değişken genişlemesi için << EOF kullanıyoruz)
+    # 5.2) Yeni konfig’u yaz (değişken genişlemesi için << EOF kullan.)
     cat > "$SYSLOG_CONF" << EOF || error_exit "rsyslog config yazılamadı."
 module(load="omprog")
 
@@ -360,13 +430,13 @@ EOF
     systemctl restart rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog servisi restart edilemedi."
     systemctl enable rsyslog >> "$LOG_FILE" 2>&1 || error_exit "rsyslog enable yapılamadı."
 
-    log "rsyslog yapılandırması tamamlandı ve servis başlatıldı."
+    log "rsyslog yapılandırma adımları tamamlandı."
 }
 
 configure_rsyslog
 
 # -----------------------------------------------------------------------------
-# 6) Servislerin Durumunu Denetle ve Basit Test
+# 6) Servisleri Denetle ve Basit Test Yap
 # -----------------------------------------------------------------------------
 diagnose_services() {
     log "Servis denetimleri yapılıyor..."
