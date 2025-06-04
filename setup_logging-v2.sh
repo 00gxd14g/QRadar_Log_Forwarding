@@ -1,42 +1,35 @@
-#!/bin/bash
-set -e
-
-# ------------------------------------------------------------------------------
-# Auditd and Rsyslog Configuration Script (v2 Enhanced for RHEL)
+#!/usr/bin/env bash
 #
-# This script:
-#   - Backs up relevant configuration files.
-#   - Writes audit rules to /etc/audit/rules.d/99-audit-siem-rhel.rules.
-#   - Configures the audisp-syslog plugin to send audit logs to rsyslog's local3 facility.
-#   - Deploys a Python script to /usr/local/bin/concat_execve.py.
-#   - Configures rsyslog (/etc/rsyslog.d/00-siem-rhel.conf) to:
-#     - Block kernel messages.
-#     - Process all messages from local3 (audit logs).
-#     - For local3 messages of type EXECVE, use omprog with the Python script
-#       to concatenate command arguments into a single a0 field.
-#     - Forward all (potentially transformed) local3 messages via TCP to the SIEM server.
-#   - Adds considerations for SELinux and Firewalld on RHEL systems.
+# unified_log_forwarding_setup.sh
 #
-# Usage: sudo bash setup-loggingv2-rhel.sh <SIEM_IP> <SIEM_PORT>
-# ------------------------------------------------------------------------------
+# Bu betik, auditd ve rsyslog’u otomatik olarak yapılandırarak:
+#   - Gerekli paketleri (auditd, audispd-plugins, rsyslog, python3) kurar.
+#   - EXECVE argümanlarını birleştiren bir Python script’i konuşlandırır.
+#   - Kapsamlı audit kurallarını /etc/audit/rules.d altında tanımlar.
+#   - audispd-plugins aracılığıyla audit kayıtlarını rsyslog'un local3 facility'sine gönderir.
+#   - Rsyslog’u yalnızca saldırı tespiti için gerekli audit kayıtlarını QRadar SIEM’e TCP ile iletecek şekilde yapılandırır.
+#   - (RHEL ailesi için) SELinux ve Firewalld ayarlarını düzenler.
+#
+# Kullanım: sudo bash unified_log_forwarding_setup.sh <SIEM_IP> <SIEM_PORT>
+#
 
-# Global variables
-LOG_FILE="/var/log/setup_logging-rhel-v2.log" # Specific log file
-SYSLOG_CONF_OUTPUT_FILE="/etc/rsyslog.d/00-siem-rhel.conf" # Specific rsyslog conf file
-AUDIT_RULES_FILE="/etc/audit/rules.d/99-audit-siem-rhel.rules" # Specific audit rules file
-AUDISP_PLUGIN_CONF_FILE="/etc/audisp/plugins.d/syslog.conf" # Standard location
-CONCAT_EXECVE_SCRIPT_PATH="/usr/local/bin/concat_execve.py" # Standard location
+set -euo pipefail
 
-# Ensure the log file is writable
-touch "$LOG_FILE" 2>/dev/null || { echo "ERROR: Cannot write to $LOG_FILE" >&2; exit 1; }
-chmod 640 "$LOG_FILE" 2>/dev/null || { echo "ERROR: Unable to set permissions on $LOG_FILE" >&2; exit 1; }
+# --- Konfigürasyon Değişkenleri ---
+LOG_FILE="/var/log/unified_log_setup.log"
+PYTHON_SCRIPT_PATH="/usr/local/bin/concat_execve_args.py"
+AUDIT_RULES_D_DIR="/etc/audit/rules.d"
+AUDIT_RULES_FILE="$AUDIT_RULES_D_DIR/99-unified-audit-rules.conf"
+AUDISP_PLUGIN_CONF_FILE="/etc/audisp/plugins.d/syslog.conf"
+RSYSLOG_SIEM_CONF="/etc/rsyslog.d/01-unified-siem.conf"
 
-# Timestamped logging function
+AUDIT_FACILITY="local3"  # Syslog facility olarak kullanacağımız audit facility
+
+# --- Yardımcı Fonksiyonlar ---
 log() {
     local message
     message="$(date '+%Y-%m-%d %H:%M:%S') $1"
-    echo "$message" | tee -a "$LOG_FILE" >/dev/null
-    echo "$message" # Also print to stdout
+    echo "$message" | tee -a "$LOG_FILE" >&2
 }
 
 error_exit() {
@@ -44,73 +37,103 @@ error_exit() {
     exit 1
 }
 
-# Check for root privileges and parameters
-[ "$EUID" -ne 0 ] && error_exit "This script must be run as root. Use sudo."
-[ $# -lt 2 ] && { echo "Usage: $0 <SIEM_IP> <SIEM_PORT>" >&2; log "Usage: $0 <SIEM_IP> <SIEM_PORT>"; exit 1; }
+# --- Ön Koşul Kontrolleri ---
+if [ "$EUID" -ne 0 ]; then
+    error_exit "Bu betik root olarak çalıştırılmalıdır. Lütfen sudo kullanın."
+fi
+
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <SIEM_IP> <SIEM_PORT>" >&2
+    log "Kullanım hatası: $0 <SIEM_IP> <SIEM_PORT>"
+    exit 1
+fi
 
 SIEM_IP="$1"
 SIEM_PORT="$2"
-log "Starting RHEL v2 configuration - SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
 
-# Detect distribution
+# Log dosyasını başlat
+touch "$LOG_FILE" &>/dev/null || { echo "FATAL: $LOG_FILE oluşturulamadı." >&2; exit 1; }
+chmod 640 "$LOG_FILE" &>/dev/null || { echo "FATAL: $LOG_FILE üzerinde izin ayarlanamadı." >&2; exit 1; }
+
+log "=== Unified Log Forwarding Kurulum Betiği Başlıyor ==="
+log "SIEM IP: $SIEM_IP, Port: $SIEM_PORT"
+
+# --- Dağıtım (Distribution) Tespiti ---
+DISTRO=""
+DISTRO_FAMILY=""   # debian_family veya rhel_family
+VERSION_ID_NUM=""
+LOCAL_SYSLOG_FILE_FOR_TESTS=""
+
 if [ -f /etc/os-release ]; then
     # shellcheck disable=SC1091
     . /etc/os-release
-    DISTRO=$ID
-    VERSION_ID_NUM=$VERSION_ID
+    DISTRO="$ID"
+    VERSION_ID_NUM="$VERSION_ID"
+    # Debian tabanlı mı diye kontrol
+    if echo "$ID_LIKE" | grep -qi "debian" || echo "$ID" | grep -Eq "^(debian|ubuntu|kali)$"; then
+        DISTRO_FAMILY="debian_family"
+        LOCAL_SYSLOG_FILE_FOR_TESTS="/var/log/syslog"
+    # RHEL tabanlı mı diye kontrol
+    elif echo "$ID_LIKE" | grep -qi "rhel" || echo "$ID_LIKE" | grep -qi "fedora" || echo "$ID" | grep -Eq "^(rhel|centos|almalinux|rocky|oracle)$"; then
+        DISTRO_FAMILY="rhel_family"
+        LOCAL_SYSLOG_FILE_FOR_TESTS="/var/log/messages"
+    else
+        log "WARNING: Desteklenmeyen dağıtım ailesi. ID: $ID, ID_LIKE: $ID_LIKE"
+        LOCAL_SYSLOG_FILE_FOR_TESTS="/var/log/syslog"  # Varsayılan fallback
+    fi
 else
-    DISTRO=$(uname -s) # Fallback
-    VERSION_ID_NUM=$(uname -r)
+    DISTRO="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    VERSION_ID_NUM="$(uname -r)"
+    log "WARNING: /etc/os-release bulunamadı. Dağıtım tespiti sınırlı."
+    LOCAL_SYSLOG_FILE_FOR_TESTS="/var/log/messages"
 fi
 
-LOCAL_SYSLOG_FILE="" # For diagnostics
-case "$DISTRO" in
-    rhel|centos|oracle|almalinux|rocky) LOCAL_SYSLOG_FILE="/var/log/messages";;
-    ubuntu|debian|kali)
-        log "INFO: This script has RHEL-specific sections. Running on $DISTRO. Some RHEL-specific steps will be skipped or adapted."
-        LOCAL_SYSLOG_FILE="/var/log/syslog"
-        ;;
-    *) error_exit "Unsupported distribution for RHEL-specific script: $DISTRO";;
-esac
-log "Detected: $DISTRO $VERSION_ID_NUM, Main local syslog file for diagnostics: $LOCAL_SYSLOG_FILE"
+log "Dağıtım Tespit Edildi: $DISTRO, Sürüm: $VERSION_ID_NUM, Aile: ${DISTRO_FAMILY:-unknown}"
+log "Yerel sistem log testi dosyası: $LOCAL_SYSLOG_FILE_FOR_TESTS"
 
-# Package installation
+# --- Paket Kurulumu ---
 install_packages() {
-    log "Installing required packages..."
-    case "$DISTRO" in
-        rhel|centos|oracle|almalinux|rocky)
-            log "Attempting to install: audit, rsyslog, python3, rsyslog-omprog (for RHEL/derivatives)"
-            if command -v dnf >/dev/null 2>&1; then # RHEL 8, 9 and derivatives
-                dnf install -y audit rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (dnf). Ensure rsyslog-omprog is available or part of rsyslog."
-            else # RHEL 7 and derivatives
-                if ! yum list installed epel-release >/dev/null 2>&1 && [[ "$VERSION_ID_NUM" == 7* ]]; then
-                    log "EPEL repository is not installed on RHEL 7. Attempting to install EPEL release for Python 3..."
-                    yum install -y epel-release >> "$LOG_FILE" 2>&1 || log "WARNING: Failed to install EPEL release. Python 3 or rsyslog-omprog might not be available."
-                    yum makecache fast >> "$LOG_FILE" 2>&1
-                fi
-                yum install -y audit rsyslog python3 rsyslog-omprog >> "$LOG_FILE" 2>&1 || {
-                    log "ERROR: Package installation failed with YUM. Python 3 or rsyslog-omprog might require EPEL (epel-release) on RHEL 7 or a specific rsyslog version. Check $LOG_FILE."
-                    error_exit "Package installation failed (yum)"
-                }
+    log "Gerekli paketler kuruluyor..."
+    if [[ "$DISTRO_FAMILY" == "debian_family" ]]; then
+        log "APT tabanlı paket kurulumu: auditd, audispd-plugins, rsyslog, python3"
+        apt-get update -y >> "$LOG_FILE" 2>&1 || error_exit "apt-get update başarısız."
+        apt-get install -y auditd audispd-plugins rsyslog python3 >> "$LOG_FILE" 2>&1 \
+            || error_exit "Paket kurulumu (apt-get) başarısız. Bağımlılıklar kontrol edin."
+    elif [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
+        log "YUM/DNF tabanlı paket kurulumu: audit, rsyslog, python3, rsyslog-omprog (gerekirse)"
+        local rhel_extra_pkgs=""
+        # RHEL 7/CentOS 7 için EPEL kontrolü
+        if [[ "$VERSION_ID_NUM" == 7* ]]; then
+            if ! yum list installed epel-release &>/dev/null; then
+                log "EPEL yüklü değil. Kuruluyor..."
+                yum install -y epel-release >> "$LOG_FILE" 2>&1 \
+                    || log "WARNING: EPEL kurulamadı; python3 veya rsyslog-omprog bulunamayabilir."
+                yum makecache fast >> "$LOG_FILE" 2>&1
             fi
-            ;;
-        ubuntu|debian|kali)
-             log "Attempting to install: auditd, audispd-plugins, rsyslog, python3 (for Debian/Ubuntu/Kali)"
-             apt-get update -y >> "$LOG_FILE" 2>&1 || error_exit "apt-get update failed"
-             # rsyslog-omprog is not typically a separate package on Debian/Ubuntu; omprog module is part of rsyslog
-             apt-get install -y auditd audispd-plugins rsyslog python3 >> "$LOG_FILE" 2>&1 || error_exit "Package installation failed (apt-get)."
-            ;;
-    esac
-    log "Packages installed successfully."
+            rhel_extra_pkgs="rsyslog-omprog"
+        fi
+        # python3 paketi casus
+        if command -v dnf &>/dev/null; then
+            dnf install -y audit rsyslog python3 $rhel_extra_pkgs >> "$LOG_FILE" 2>&1 \
+                || error_exit "Paket kurulumu (dnf) başarısız."
+        else
+            yum install -y audit rsyslog python3 $rhel_extra_pkgs >> "$LOG_FILE" 2>&1 \
+                || error_exit "Paket kurulumu (yum) başarısız."
+        fi
+        # Python3 yoksa uyarı
+        if ! command -v python3 &>/dev/null; then
+            log "WARNING: python3 komutu sistemde bulunamadı. Python3 özellikleri kısıtlı olabilir."
+        fi
+    else
+        error_exit "Desteklenmeyen dağıtım ailesi: '$DISTRO_FAMILY'."
+    fi
+    log "Gerekli paketler başarıyla kuruldu."
 }
 
-install_packages
-
-# Deploy concat_execve.py script
+# --- Python Script Dağıtımı ---
 deploy_python_script() {
-    log "Deploying Python script to $CONCAT_EXECVE_SCRIPT_PATH..."
-    # Python script content (same as in setup_logging-v2.sh)
-    cat > "$CONCAT_EXECVE_SCRIPT_PATH" << 'EOF'
+    log "Python script ($PYTHON_SCRIPT_PATH) oluşturuluyor: EXECVE argüman birleştirmesi için..."
+    cat > "$PYTHON_SCRIPT_PATH" << 'EOF'
 #!/usr/bin/env python3
 import sys
 import re
@@ -121,52 +144,84 @@ def process_line(line):
     args = re.findall(r'a\d+="([^"]*)"', line)
     if args:
         combined_command = " ".join(args)
-        escaped_combined_command = combined_command.replace('"', '\\"')
+        escaped_combined = combined_command.replace('"', '\\"')
         new_line = re.sub(r'a\d+="(?:[^"\\]|\\.)*"\s*', '', line).strip()
         if new_line and not new_line.endswith(" "):
             new_line += " "
-        new_line += 'a0="' + escaped_combined_command + '"'
+        new_line += 'a0="' + escaped_combined + '"'
         return new_line
     return line
 
 def main():
     try:
         for line_in in sys.stdin:
-            processed_line = process_line(line_in.strip())
-            print(processed_line)
+            processed = process_line(line_in.strip())
+            print(processed)
             sys.stdout.flush()
     except Exception as e:
-        print(f"concat_execve.py ERROR: {e}", file=sys.stderr)
+        print(f"concat_execve_args.py ERROR: {e}", file=sys.stderr)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
 EOF
-    chmod +x "$CONCAT_EXECVE_SCRIPT_PATH" || error_exit "Failed to make Python script $CONCAT_EXECVE_SCRIPT_PATH executable"
-    log "$CONCAT_EXECVE_SCRIPT_PATH deployed and made executable."
+
+    chmod 755 "$PYTHON_SCRIPT_PATH" \
+        || error_exit "Python script $PYTHON_SCRIPT_PATH çalıştırılabilir yapılamadı."
+    chown root:root "$PYTHON_SCRIPT_PATH"
+    log "Python script $PYTHON_SCRIPT_PATH oluşturuldu ve çalıştırılabilir yapıldı."
 }
 
-deploy_python_script
-
-# Configure auditd
+# --- Auditd Yapılandırması ---
 configure_auditd() {
-    log "Configuring auditd..."
-    mkdir -p "$(dirname "$AUDIT_RULES_FILE")" || error_exit "Failed to create audit rules directory $(dirname "$AUDIT_RULES_FILE")"
-    if [ -f "$AUDIT_RULES_FILE" ];then
-        cp -p "$AUDIT_RULES_FILE" "${AUDIT_RULES_FILE}.bak.$(date +%F_%T)" 2>/dev/null || log "WARNING: Could not back up $AUDIT_RULES_FILE"
+    log "auditd yapılandırması başlıyor..."
+
+    # audisp-syslog binary konumunu tespit et
+    local audisp_syslog_binary=""
+    if [[ "$DISTRO_FAMILY" == "debian_family" ]]; then
+        [ -x "/usr/sbin/audisp-syslog" ] && audisp_syslog_binary="/usr/sbin/audisp-syslog"
+    elif [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
+        [ -x "/sbin/audisp-syslog" ] && audisp_syslog_binary="/sbin/audisp-syslog"
     fi
-    
+    if [ -z "$audisp_syslog_binary" ]; then
+        [ -x "/usr/sbin/audisp-syslog" ] && audisp_syslog_binary="/usr/sbin/audisp-syslog"
+        [ -z "$audisp_syslog_binary" ] && [ -x "/sbin/audisp-syslog" ] && audisp_syslog_binary="/sbin/audisp-syslog"
+    fi
+    if [ -z "$audisp_syslog_binary" ]; then
+        error_exit "audisp-syslog bulunamadı. 'audispd-plugins' veya 'audit' paketlerini kontrol edin."
+    fi
+    log "audisp-syslog binary: $audisp_syslog_binary"
+
+    # Audisp plugin yapılandırması
+    mkdir -p "$(dirname "$AUDISP_PLUGIN_CONF_FILE")"
+    UPPER_FACILITY="$(echo "$AUDIT_FACILITY" | tr '[:lower:]' '[:upper:]')"  # local3 -> LOCAL3
+    cat > "$AUDISP_PLUGIN_CONF_FILE" << EOF
+active = yes
+direction = out
+path = $audisp_syslog_binary
+type = always
+args = LOG_${UPPER_FACILITY}
+format = string
+EOF
+    chmod 640 "$AUDISP_PLUGIN_CONF_FILE"
+    log "Audisp plugin yapılandırıldı: $AUDISP_PLUGIN_CONF_FILE (facility: $AUDIT_FACILITY)"
+
+    # Audit kuralları dizini ve dosyası
+    mkdir -p "$AUDIT_RULES_D_DIR"
     cat > "$AUDIT_RULES_FILE" << 'EOF'
+# ----- Birleşik Audit Kuralları -----
 -D
 -b 8192
 -f 1
-# Self-auditing
+
+# Audit konfigürasyon değişiklikleri
 -w /etc/audit/ -p wa -k audit_config_changes
 -w /etc/libaudit.conf -p wa -k audit_config_changes
 -w /etc/audisp/ -p wa -k audit_config_changes
 -w /sbin/auditctl -p x -k audit_tool_usage
 -w /sbin/auditd -p x -k audit_tool_usage
 -w /var/log/audit/ -p rwa -k audit_log_access
-# Identity and Access Management
+
+# Kimlik ve erişim yönetimi
 -w /etc/passwd -p wa -k iam_passwd_changes
 -w /etc/shadow -p wa -k iam_shadow_changes
 -w /etc/group -p wa -k iam_group_changes
@@ -178,222 +233,261 @@ configure_auditd() {
 -w /var/log/faillog -p wa -k iam_faillog_access
 -w /var/log/lastlog -p wa -k iam_lastlog_access
 -w /etc/pam.d/ -p wa -k iam_pam_changes
-# System and Network Configuration
--a always,exit -F arch=b64 -S sethostname -S setdomainname -k sys_net_config_changes
--a always,exit -F arch=b32 -S sethostname -S setdomainname -k sys_net_config_changes
--w /etc/hosts -p wa -k sys_hosts_file_changes
--w /etc/sysconfig/network-scripts/ -p wa -k sys_rhel_net_scripts_changes # RHEL specific
--w /etc/network/interfaces -p wa -k sys_deb_net_interfaces_changes # Debian/Ubuntu
--w /etc/netplan/ -p wa -k sys_ubuntu_netplan_changes # Ubuntu with netplan
-# System State Changes
--w /sbin/shutdown -p x -k sys_state_shutdown
--w /sbin/poweroff -p x -k sys_state_poweroff
--w /sbin/reboot -p x -k sys_state_reboot
--w /sbin/halt -p x -k sys_state_halt
-# Kernel Module Changes
--a always,exit -F path=/sbin/insmod -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_mod_insmod
--a always,exit -F path=/sbin/rmmod -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_mod_rmmod
--a always,exit -F path=/sbin/modprobe -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_mod_modprobe
--w /etc/modprobe.conf -p wa -k kernel_mod_conf_changes
--w /etc/modprobe.d/ -p wa -k kernel_mod_conf_d_changes
-# Executions
+
+# Sistem ve ağ yapılandırması
+-a always,exit -F arch=b64 -S sethostname -S setdomainname -k sys_net_config
+-a always,exit -F arch=b32 -S sethostname -S setdomainname -k sys_net_config
+-w /etc/hosts -p wa -k sys_hosts_file
+
+# Sistem durumu değişiklikleri
+-w /sbin/shutdown -p x -k sys_state_change
+-w /sbin/poweroff -p x -k sys_state_change
+-w /sbin/reboot -p x -k sys_state_change
+-w /sbin/halt -p x -k sys_state_change
+
+# Kernel modülü değişiklikleri
+-a always,exit -F path=/sbin/insmod -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_module_change
+-a always,exit -F path=/sbin/rmmod -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_module_change
+-a always,exit -F path=/sbin/modprobe -F perm=x -F auid>=1000 -F auid!=-1 -k kernel_module_change
+-w /etc/modprobe.conf -p wa -k kernel_module_config
+-w /etc/modprobe.d/ -p wa -k kernel_module_config
+
+# Komut çalıştırma (Audit EXECVE kayıtları - saldırı tespiti için kritik)
 -a always,exit -F arch=b64 -S execve -F euid=0 -k root_execve
 -a always,exit -F arch=b32 -S execve -F euid=0 -k root_execve
 -a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_execve
 -a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_execve
-# Privilege Escalation and Changes
--w /bin/su -p x -k priv_su_exec
--w /usr/bin/sudo -p x -k priv_sudo_exec
--a always,exit -F arch=b64 -S setuid -S setgid -S seteuid -S setegid -S setreuid -S setregid -S setresuid -S setresgid -k priv_escalation_syscalls
--a always,exit -F arch=b32 -S setuid -S setgid -S seteuid -S setegid -S setreuid -S setregid -S setresuid -S setresgid -k priv_escalation_syscalls
--a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k priv_perm_change_exec_sgid
--a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k priv_perm_change_exec_sgid
-# Suspicious Utilities
--w /usr/bin/wget -p x -k susp_wget_usage
--w /usr/bin/curl -p x -k susp_curl_usage
--w /bin/nc -p x -k susp_netcat_usage
--w /usr/bin/ncat -p x -k susp_ncat_usage
-# -e 2 # Make rules immutable (optional)
+
+# Yetki yükseltme ve değişiklikler
+-w /bin/su -p x -k privilege_escalation_su
+-w /usr/bin/sudo -p x -k privilege_escalation_sudo
+-a always,exit -F arch=b64 -S setuid -S setgid -S seteuid -S setegid -S setreuid -S setregid -S setresuid -S setresgid -k privilege_syscalls
+-a always,exit -F arch=b32 -S setuid -S setgid -S seteuid -S setegid -S setreuid -S setregid -S setresuid -S setresgid -k privilege_syscalls
+-a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k privilege_perm_change
+-a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F a1&0111 -F auid>=1000 -F auid!=-1 -k privilege_perm_change
+
+# Şüpheli araç kullanımı
+-w /usr/bin/wget -p x -k suspicious_utility_wget
+-w /usr/bin/curl -p x -k suspicious_utility_curl
+-w /bin/nc -p x -k suspicious_utility_netcat
+-w /usr/bin/ncat -p x -k suspicious_utility_ncat
+
+# Son: Kurallar korunur (immutable) - dikkatli kullanın
+# -e 2
 EOF
-    chmod 640 "$AUDIT_RULES_FILE" || error_exit "Failed to set permissions on $AUDIT_RULES_FILE"
-    
-    log "Loading audit rules..."
-    if command -v augenrules >/dev/null 2>&1; then
-        augenrules --load >> "$LOG_FILE" 2>&1 || error_exit "augenrules --load failed. Check $LOG_FILE and audit daemon status for errors related to $AUDIT_RULES_FILE."
+
+    # Dağıtıma özel ilave izlemeler
+    if [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
+        [ -d "/etc/sysconfig/network-scripts/" ] && {
+            log "RHEL-specific izleme ekleniyor: /etc/sysconfig/network-scripts/"
+            echo "-w /etc/sysconfig/network-scripts/ -p wa -k sys_rhel_netscripts" >> "$AUDIT_RULES_FILE"
+        }
+    elif [[ "$DISTRO_FAMILY" == "debian_family" ]]; then
+        [ -f "/etc/network/interfaces" ] && {
+            log "Debian-family izleme ekleniyor: /etc/network/interfaces"
+            echo "-w /etc/network/interfaces -p wa -k sys_debian_interfaces" >> "$AUDIT_RULES_FILE"
+        }
+        [ -d "/etc/netplan" ] && {
+            log "Ubuntu Netplan izleme ekleniyor: /etc/netplan/"
+            echo "-w /etc/netplan/ -p wa -k sys_ubuntu_netplan" >> "$AUDIT_RULES_FILE"
+        }
+    fi
+
+    chmod 640 "$AUDIT_RULES_FILE"
+    log "Audit kuralları oluşturuldu: $AUDIT_RULES_FILE"
+
+    # Audit kurallarını yükle
+    log "Audit kuralları yükleniyor..."
+    systemctl enable auditd >> "$LOG_FILE" 2>&1
+    # Auditd çalışmıyorsa başlat
+    systemctl is-active --quiet auditd || systemctl restart auditd >> "$LOG_FILE" 2>&1
+
+    if command -v augenrules &>/dev/null; then
+        local AUGEN_STDERR="${LOG_FILE}.augenrules_stderr"
+        if augenrules --load 2> "$AUGEN_STDERR"; then
+            log "augenrules --load başarılı."
+            sleep 1
+            if ! auditctl -l | grep -q user_execve; then
+                log "WARNING: Temel 'user_execve' kuralı auditctl -l çıktısında bulunamadı."
+                [ -s "$AUGEN_STDERR" ] && log "augenrules stderr: $(cat "$AUGEN_STDERR")"
+            else
+                log "Audit kuralları yüklendi (user_execve tespit edildi)."
+            fi
+        else
+            log "ERROR: augenrules --load başarısız. stderr:"
+            cat "$AUGEN_STDERR" >> "$LOG_FILE"
+            log "Kuralları gözden geçirin: $AUDIT_RULES_FILE"
+            error_exit "augenrules --load başarısız."
+        fi
+        rm -f "$AUGEN_STDERR"
     else
-        auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1 || error_exit "auditctl -R $AUDIT_RULES_FILE failed. augenrules is highly recommended for persistent rule loading."
+        log "augenrules komutu yok. 'auditctl -R' ile kurallar yüklenecek (kalıcı değil)."
+        auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1 \
+            || error_exit "'auditctl -R' başarısız."
     fi
-    log "Audit rules loaded."
 
-    systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "Failed to restart auditd"
-    systemctl enable auditd >> "$LOG_FILE" 2>&1 || error_exit "Failed to enable auditd"
-    log "Auditd configured, rules loaded, and service restarted/enabled."
-}
- 
-configure_auditd
- 
-# Configure audisp-syslog plugin
-configure_audisp() {
-    log "Configuring audisp-syslog plugin to use LOG_LOCAL3..."
-    local audisp_syslog_binary_path=""
-    # Adjusted path preference for RHEL vs Debian
-    if [[ "$DISTRO" == "rhel" || "$DISTRO" == "centos" || "$DISTRO" == "oracle" || "$DISTRO" == "almalinux" || "$DISTRO" == "rocky" ]]; then
-        if [ -x "/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/sbin/audisp-syslog"; fi
-    fi
-    if [ -z "$audisp_syslog_binary_path" ] && [ -x "/usr/sbin/audisp-syslog" ]; then audisp_syslog_binary_path="/usr/sbin/audisp-syslog"; fi
-    
-    if [ -z "$audisp_syslog_binary_path" ]; then error_exit "audisp-syslog binary not found in /sbin or /usr/sbin."; fi
-    log "Using audisp-syslog binary at: $audisp_syslog_binary_path"
+    systemctl restart auditd >> "$LOG_FILE" 2>&1 \
+        || error_exit "auditd yeniden başlatılamadı."
 
-    mkdir -p "$(dirname "$AUDISP_PLUGIN_CONF_FILE")" || error_exit "Failed to create audisp config directory $(dirname "$AUDISP_PLUGIN_CONF_FILE")"
-    cat > "$AUDISP_PLUGIN_CONF_FILE" << EOF || error_exit "Failed to write audisp-syslog configuration to $AUDISP_PLUGIN_CONF_FILE"
-active = yes
-direction = out
-path = $audisp_syslog_binary_path
-type = always
-args = LOG_LOCAL3
-format = string
-EOF
-    chmod 640 "$AUDISP_PLUGIN_CONF_FILE" || error_exit "Failed to set permissions on $AUDISP_PLUGIN_CONF_FILE"
-    log "Audisp-syslog plugin configured to use LOG_LOCAL3. Restarting auditd..."
-    systemctl restart auditd >> "$LOG_FILE" 2>&1 || error_exit "Failed to restart auditd after audisp configuration"
-    log "Audisp-syslog configured successfully."
+    log "auditd servisi etkinleştirildi ve yeniden başlatıldı."
 }
- 
-configure_audisp
- 
-# Configure rsyslog
+
+# --- Rsyslog Yapılandırması ---
 configure_rsyslog() {
-    log "Configuring rsyslog for SIEM (local3 with omprog for EXECVE)..."
-    if [ -f "$SYSLOG_CONF_OUTPUT_FILE" ]; then
-      cp -p "$SYSLOG_CONF_OUTPUT_FILE" "${SYSLOG_CONF_OUTPUT_FILE}.bak.$(date +%F_%T)" 2>/dev/null || log "WARNING: Could not back up $SYSLOG_CONF_OUTPUT_FILE"
+    log "rsyslog yapılandırması: Saldırı tespiti amaçlı audit kayıtları QRadar’a gönderilecek..."
+
+    # Var olan konfigürasyonu yedekle
+    if [ -f "$RSYSLOG_SIEM_CONF" ]; then
+        cp -p "$RSYSLOG_SIEM_CONF" "${RSYSLOG_SIEM_CONF}.bak.$(date +%F_%T)" 2>/dev/null \
+            || log "WARNING: $RSYSLOG_SIEM_CONF yedeklenemedi."
     fi
-    
-    cat > "$SYSLOG_CONF_OUTPUT_FILE" << EOF || error_exit "Failed to write rsyslog configuration to $SYSLOG_CONF_OUTPUT_FILE"
+
+    cat > "$RSYSLOG_SIEM_CONF" << EOF
+# ----- Birleşik SIEM Forwarding Konfigürasyonu -----
+
+# omprog modülü komut tabanlı eylem için
 module(load="omprog")
 
+# Kernel mesajlarını işleme zincirinden çıkar
 if \$syslogfacility-text == "kern" then {
     stop
 }
 
-if \$syslogfacility-text == "local3" then {
+# Yalnızca local3 facility (audit) kayıtlarını işlemek
+if \$syslogfacility-text == "$AUDIT_FACILITY" and (
+       \$msg contains "type=EXECVE" 
+    or \$msg contains "key=\"root_execve\"" 
+    or \$msg contains "key=\"user_execve\"" 
+    or \$msg contains "key=\"privilege_" 
+    or \$msg contains "key=\"suspicious_utility_"
+) then {
+    # EXECVE içeren kayıtlar, Python script ile dönüştürülecek
     if \$msg contains "type=EXECVE" then {
         action(
             type="omprog"
-            binary="$CONCAT_EXECVE_SCRIPT_PATH"
-            name="TransformExecve_RHEL"
+            binary="$PYTHON_SCRIPT_PATH"
+            name="TransformExecveForSIEM"
         )
     }
+
+    # Filtrelenen tüm saldırı tespiti kayıtlarını QRadar’a TCP üzerinden gönder
     action(
         type="omfwd"
         target="$SIEM_IP"
         port="$SIEM_PORT"
         protocol="tcp"
-        name="ForwardAuditToSIEM_RHEL_local3"
+        name="ForwardAuditToSIEM"
     )
-    stop 
+    stop    # Daha fazla işlenmesin, tekrar gitmesin
 }
 EOF
-    
-    log "Rsyslog configuration written to $SYSLOG_CONF_OUTPUT_FILE"
-    log "Validating rsyslog configuration..."
-    if rsyslogd -N1 -f "$SYSLOG_CONF_OUTPUT_FILE" >> "$LOG_FILE" 2>&1; then
-        log "Rsyslog configuration validation successful for $SYSLOG_CONF_OUTPUT_FILE."
+
+    log "Rsyslog SIEM yapılandırması yazıldı: $RSYSLOG_SIEM_CONF"
+
+    log "Rsyslog konfig doğrulama yapılıyor..."
+    RSYSLOG_VALID_LOG="${LOG_FILE}.rsyslog_validation"
+    if rsyslogd -N1 > "$RSYSLOG_VALID_LOG" 2>&1; then
+        log "Rsyslog ana konfigürasyonu başarılı şekilde doğrulandı."
+        cat "$RSYSLOG_VALID_LOG" >> "$LOG_FILE"
     else
-        log "WARNING: Rsyslog configuration validation reported issues for $SYSLOG_CONF_OUTPUT_FILE. Check $LOG_FILE."
-        rsyslogd -N1 >> "$LOG_FILE" 2>&1 || log "WARNING: Main rsyslog configuration also has issues."
+        log "WARNING: Rsyslog doğrulama satır hatası tespit etti. Detaylar log’da."
+        cat "$RSYSLOG_VALID_LOG" >> "$LOG_FILE"
+        # Yine de yeniden başlatmayı dene
     fi
+    rm -f "$RSYSLOG_VALID_LOG"
 
-    systemctl restart rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Failed to restart rsyslog"
-    systemctl enable rsyslog >> "$LOG_FILE" 2>&1 || error_exit "Failed to enable rsyslog"
-    log "Rsyslog configured, restarted, and enabled."
+    systemctl enable rsyslog >> "$LOG_FILE" 2>&1
+    systemctl restart rsyslog >> "$LOG_FILE" 2>&1 \
+        || error_exit "rsyslog yeniden başlatılamadı."
+
+    log "Rsyslog servisi etkinleştirildi ve yeniden başlatıldı."
 }
- 
-configure_rsyslog
 
-# Configure SELinux and Firewall for RHEL/CentOS/Oracle/Alma/Rocky
-configure_rhel_specifics() {
-    if [[ "$DISTRO" == "rhel" || "$DISTRO" == "centos" || "$DISTRO" == "oracle" || "$DISTRO" == "almalinux" || "$DISTRO" == "rocky" ]]; then
-        log "Performing RHEL-specific configurations (SELinux, Firewall)..."
-        if command -v getsebool >/dev/null 2>&1 && command -v setsebool >/dev/null 2>&1; then
-            local selinux_bool_syslog_net="syslogd_can_network_connect"
-            log "Checking SELinux boolean $selinux_bool_syslog_net..."
-            if getsebool "$selinux_bool_syslog_net" | grep -q "--> on$"; then
-                log "SELinux: $selinux_bool_syslog_net is already enabled."
+# --- OS’ye Özgü Ayarlar (RHEL Ailesi için SELinux/Firewall) ---
+configure_os_specifics() {
+    if [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
+        log "RHEL ailesi için ek yapılandırmalar (SELinux, Firewalld)..."
+
+        # SELinux: rsyslog’un ağ bağlantısı yapmasına izin ver
+        if command -v getsebool &>/dev/null && command -v setsebool &>/dev/null; then
+            local selinux_bool="syslogd_can_network_connect"
+            if getsebool "$selinux_bool" | grep -q "--> on$"; then
+                log "SELinux: $selinux_bool zaten etkin."
             else
-                log "SELinux: $selinux_bool_syslog_net is disabled. Attempting to enable it persistently."
-                if setsebool -P "$selinux_bool_syslog_net" on; then
-                    log "SELinux: Successfully enabled $selinux_bool_syslog_net persistently."
-                else
-                    log "WARNING: Failed to set SELinux boolean $selinux_bool_syslog_net. Manual SELinux config (setsebool -P $selinux_bool_syslog_net on) might be needed."
-                fi
+                log "SELinux: $selinux_bool etkinleştiriliyor (kalıcı)..."
+                setsebool -P "$selinux_bool" on >> "$LOG_FILE" 2>&1 \
+                    && log "SELinux: $selinux_bool başarıyla etkinleştirildi." \
+                    || log "WARNING: SELinux: $selinux_bool ayarlanamadı."
             fi
-            log "SELinux: For omprog execution of $CONCAT_EXECVE_SCRIPT_PATH, check 'ausearch -m avc -ts recent' if issues occur. Consider 'chcon -t syslogd_script_exec_t $CONCAT_EXECVE_SCRIPT_PATH' or custom policy."
+            log "Eğer omprog reddedilirse, 'ausearch -m avc -ts recent' ve 'chcon -t syslogd_script_exec_t $PYTHON_SCRIPT_PATH' komutlarını gözden geçirin."
         else
-            log "SELinux: getsebool/setsebool commands not found. Skipping automatic SELinux boolean check."
+            log "SELinux komutları bulunamadı. Otomatik SELinux ayarı atlandı."
         fi
 
-        if command -v firewall-cmd >/dev/null 2>&1; then
+        # Firewalld: SIEM portunu aç
+        if command -v firewall-cmd &>/dev/null; then
             if systemctl is-active --quiet firewalld; then
-                log "Firewalld is active. Attempting to add rule for SIEM TCP port $SIEM_PORT..."
-                if ! firewall-cmd --query-port="$SIEM_PORT/tcp" --permanent >/dev/null 2>&1; then
-                    firewall-cmd --permanent --add-port="$SIEM_PORT/tcp" >> "$LOG_FILE" 2>&1 || log "WARNING: firewall-cmd --permanent --add-port failed."
+                log "Firewalld aktif. TCP port $SIEM_PORT açılıyor..."
+                if ! firewall-cmd --query-port="$SIEM_PORT/tcp" --permanent &>/dev/null; then
+                    firewall-cmd --permanent --add-port="$SIEM_PORT/tcp" >> "$LOG_FILE" 2>&1 \
+                        && log "Firewalld: Port $SIEM_PORT/tcp kalıcı olarak eklendi." \
+                        || log "WARNING: firewall-cmd --permanent --add-port=$SIEM_PORT/tcp başarısız."
                 else
-                     log "Firewalld: Port $SIEM_PORT/tcp is already in permanent configuration."
+                    log "Firewalld: Port $SIEM_PORT/tcp zaten kalıcı kurallarda var."
                 fi
-                firewall-cmd --reload >> "$LOG_FILE" 2>&1 || log "WARNING: firewall-cmd --reload failed."
-                if firewall-cmd --query-port="$SIEM_PORT/tcp" >/dev/null 2>&1; then
-                    log "Firewalld: Port $SIEM_PORT/tcp is now active."
+                firewall-cmd --reload >> "$LOG_FILE" 2>&1 \
+                    && log "Firewalld: Kurallar yeniden yüklendi." \
+                    || log "WARNING: firewall-cmd --reload başarısız."
+                if firewall-cmd --query-port="$SIEM_PORT/tcp" &>/dev/null; then
+                    log "Firewalld: Port $SIEM_PORT/tcp çalışır durumda."
                 else
-                    log "WARNING: Firewalld: Port $SIEM_PORT/tcp may NOT be active. Check 'firewall-cmd --list-ports'."
+                    log "WARNING: Firewalld: Port $SIEM_PORT/tcp aktif olmayabilir."
                 fi
             else
-                log "Firewalld service is not active. Skipping firewalld rule addition."
+                log "Firewalld aktif değil. Port açma adımı atlandı."
             fi
         else
-            log "Firewalld (firewall-cmd) not found. Skipping automatic firewall configuration for port $SIEM_PORT/tcp."
+            log "Firewalld (firewall-cmd) yok. Otomatik firewall yapılandırması atlandı."
         fi
     else
-        log "Skipping RHEL-specific configurations as DISTRO is $DISTRO."
+        log "RHEL ailesine özgü ayarlar atlandı (DISTRO_FAMILY: '$DISTRO_FAMILY')."
     fi
 }
 
-configure_rhel_specifics
+# --- Ana Akış ---
+install_packages
+deploy_python_script
+configure_auditd
+configure_rsyslog
+configure_os_specifics
 
-# Diagnostic functions
-diagnose_services() {
-    log "Running diagnostics..."
-    if systemctl is-active --quiet auditd; then log "Auditd service is active."; else log "ERROR: auditd is not running."; fi
-    if systemctl is-active --quiet rsyslog; then log "Rsyslog service is active."; else log "ERROR: rsyslog is not running."; fi
-    
-    local test_msg_content="Test RHEL-v2 audit-like message from $(hostname) diagnostics $(date)" # Added hostname
-    log "Sending test message to local3 facility: '$test_msg_content'"
-    logger -p local3.info "$test_msg_content" || log "WARNING: logger command failed to send to local3."
-    sleep 3
+# --- Son Tanı/Kontrol ---
+log "--- Final Tanı/Kontroller ---"
+log "Servis durumları kontrol ediliyor..."
+systemctl is-active --quiet auditd && log "Auditd servisi aktif." || log "WARNING: Auditd servisi çalışmıyor."
+systemctl is-active --quiet rsyslog && log "Rsyslog servisi aktif." || log "WARNING: Rsyslog servisi çalışmıyor."
 
-    log "Checking if test message for local3 reached local system log ($LOCAL_SYSLOG_FILE)..."
-    if grep -Fq "$test_msg_content" "$LOCAL_SYSLOG_FILE"; then
-        log "Syslog test event (local3 to $LOCAL_SYSLOG_FILE) found. (Note: 'stop' in rsyslog config might prevent this if other rules for local3 exist before it)."
-    else
-        log "Syslog test event for local3 NOT found in $LOCAL_SYSLOG_FILE. This can be EXPECTED if 'stop' is used after forwarding in rsyslog config for local3. Primarily check SIEM for this message."
-    fi
-    
-    log "Touching /etc/passwd to trigger 'iam_passwd_changes' audit event..."
-    touch /etc/passwd || log "WARNING: Test 'touch /etc/passwd' failed."
-    sleep 3
+# Test amaçlı audit tetikleme
+local AUDIT_TEST_KEY="iam_passwd_changes"
+log "Test audit olayı tetikleniyor: /etc/passwd dosyasına dokunma (key: $AUDIT_TEST_KEY)..."
+touch /etc/passwd 2>/dev/null || log "WARNING: /etc/passwd dokunulamadı."
+sleep 3
 
-    log "Checking ausearch for 'iam_passwd_changes' (uses --start today for recent events)..."
-    if ausearch --start today -k iam_passwd_changes --raw | grep -q 'type=SYSCALL.*key="iam_passwd_changes"'; then
-        log "Audit event for 'iam_passwd_changes' FOUND in local audit logs (ausearch)."
-    else
-        log "WARNING: Audit event 'iam_passwd_changes' NOT found via ausearch. Check audit rules and auditd service status and logs."
-    fi
-    log "To verify SIEM forwarding: sudo tcpdump -i any host $SIEM_IP and port $SIEM_PORT -A -n"
-    log "Check for concat_execve.py errors in rsyslog logs (e.g., /var/log/syslog or /var/log/messages) or the omprog debug log file (if enabled in rsyslog config)."
-}
- 
-diagnose_services
-log "Setup script (RHEL v2 - adapted for $DISTRO) finished."
-log "Review $LOG_FILE for detailed execution logs and any warnings."
-log "Ensure the SIEM ($SIEM_IP:$SIEM_PORT) is configured to receive TCP syslog messages from facility local3."
+log "ausearch ile audit etkinliği aranıyor..."
+if ausearch -k "$AUDIT_TEST_KEY" --raw --start today | grep -q "$AUDIT_TEST_KEY"; then
+    log "SUCCESS: Test audit olayı ($AUDIT_TEST_KEY) bulundu."
+else
+    log "WARNING: Test audit olayı ($AUDIT_TEST_KEY) bulunamadı. Audit kurallarını kontrol edin."
+fi
+
+# Test amaçlı syslog gönderme
+local TEST_MSG="Unified script test log: facility=$AUDIT_FACILITY $(date)"
+log "logger ile test mesajı gönderiliyor ($AUDIT_FACILITY): '$TEST_MSG'"
+logger -p "$AUDIT_FACILITY.info" "$TEST_MSG"
+
+log "Test mesajı ve audit olaylarının QRadar’da görünüp görünmediğini kontrol edin."
+log "Sorun devam ederse, 'sudo tcpdump -i any host $SIEM_IP and port $SIEM_PORT -A -n' komutuyla ağ trafiğini inceleyin."
+log "Ayrıca /var/log/audit/audit.log ve rsyslog günlüklerini gözden geçirin."
+
+log "=== Unified Log Forwarding Kurulum Betiği Tamamlandı ==="
 exit 0
