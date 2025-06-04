@@ -6,7 +6,7 @@
 #   - Gerekli paketleri (auditd, audispd-plugins, rsyslog, python3) kurar.
 #   - EXECVE argümanlarını birleştiren bir Python script’i konuşlandırır.
 #   - Kapsamlı audit kurallarını /etc/audit/rules.d altında tanımlar.
-#   - audispd-plugins aracılığıyla audit kayıtlarını rsyslog'un local3 facility'sine gönderir.
+#   - audispd-plugins aracılığıyla audit kayıtlarını rsyslog'un local3 facility'sine gönderir (eğer possible).
 #   - Rsyslog’u yalnızca saldırı tespiti için gerekli audit kayıtlarını QRadar SIEM’e TCP ile iletecek şekilde yapılandırır.
 #   - (RHEL ailesi için) SELinux ve Firewalld ayarlarını düzenler.
 #
@@ -98,7 +98,7 @@ install_packages() {
         log "APT tabanlı paket kurulumu: auditd, audispd-plugins, rsyslog, python3"
         apt-get update -y >> "$LOG_FILE" 2>&1 || error_exit "apt-get update başarısız."
         apt-get install -y auditd audispd-plugins rsyslog python3 >> "$LOG_FILE" 2>&1 \
-            || error_exit "Paket kurulumu (apt-get) başarısız. Bağımlılıklar kontrol edin."
+            || error_exit "Paket kurulumu (apt-get) başarısız. Bağımlılıkları kontrol edin."
     elif [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
         log "YUM/DNF tabanlı paket kurulumu: audit, rsyslog, python3, rsyslog-omprog (gerekirse)"
         local rhel_extra_pkgs=""
@@ -112,7 +112,6 @@ install_packages() {
             fi
             rhel_extra_pkgs="rsyslog-omprog"
         fi
-        # python3 paketi casus
         if command -v dnf &>/dev/null; then
             dnf install -y audit rsyslog python3 $rhel_extra_pkgs >> "$LOG_FILE" 2>&1 \
                 || error_exit "Paket kurulumu (dnf) başarısız."
@@ -175,26 +174,28 @@ EOF
 configure_auditd() {
     log "auditd yapılandırması başlıyor..."
 
-    # audisp-syslog binary konumunu tespit et
+    # audisp-syslog binary konumunu tespit etmek için önce PATH içini kontrol et
     local audisp_syslog_binary=""
-    if [[ "$DISTRO_FAMILY" == "debian_family" ]]; then
-        [ -x "/usr/sbin/audisp-syslog" ] && audisp_syslog_binary="/usr/sbin/audisp-syslog"
-    elif [[ "$DISTRO_FAMILY" == "rhel_family" ]]; then
-        [ -x "/sbin/audisp-syslog" ] && audisp_syslog_binary="/sbin/audisp-syslog"
+    if command -v audisp-syslog &>/dev/null; then
+        audisp_syslog_binary="$(command -v audisp-syslog)"
+    elif [ -x "/sbin/audisp-syslog" ]; then
+        audisp_syslog_binary="/sbin/audisp-syslog"
+    elif [ -x "/usr/sbin/audisp-syslog" ]; then
+        audisp_syslog_binary="/usr/sbin/audisp-syslog"
+    elif [ -x "/usr/libexec/audit/audisp-syslog" ]; then
+        audisp_syslog_binary="/usr/libexec/audit/audisp-syslog"
+    elif [ -x "/usr/lib/audit/audisp-syslog" ]; then
+        audisp_syslog_binary="/usr/lib/audit/audisp-syslog"
     fi
-    if [ -z "$audisp_syslog_binary" ]; then
-        [ -x "/usr/sbin/audisp-syslog" ] && audisp_syslog_binary="/usr/sbin/audisp-syslog"
-        [ -z "$audisp_syslog_binary" ] && [ -x "/sbin/audisp-syslog" ] && audisp_syslog_binary="/sbin/audisp-syslog"
-    fi
-    if [ -z "$audisp_syslog_binary" ]; then
-        error_exit "audisp-syslog bulunamadı. 'audispd-plugins' veya 'audit' paketlerini kontrol edin."
-    fi
-    log "audisp-syslog binary: $audisp_syslog_binary"
 
-    # Audisp plugin yapılandırması
-    mkdir -p "$(dirname "$AUDISP_PLUGIN_CONF_FILE")"
-    UPPER_FACILITY="$(echo "$AUDIT_FACILITY" | tr '[:lower:]' '[:upper:]')"  # local3 -> LOCAL3
-    cat > "$AUDISP_PLUGIN_CONF_FILE" << EOF
+    if [ -z "$audisp_syslog_binary" ]; then
+        log "WARNING: audisp-syslog binary bulunamadı. audisp-plugin yapılandırması atlanacak."
+    else
+        log "audisp-syslog binary: $audisp_syslog_binary"
+        # Audisp plugin yapılandırması
+        mkdir -p "$(dirname "$AUDISP_PLUGIN_CONF_FILE")"
+        UPPER_FACILITY="$(echo "$AUDIT_FACILITY" | tr '[:lower:]' '[:upper:]')"  # local3 -> LOCAL3
+        cat > "$AUDISP_PLUGIN_CONF_FILE" << EOF
 active = yes
 direction = out
 path = $audisp_syslog_binary
@@ -202,8 +203,9 @@ type = always
 args = LOG_${UPPER_FACILITY}
 format = string
 EOF
-    chmod 640 "$AUDISP_PLUGIN_CONF_FILE"
-    log "Audisp plugin yapılandırıldı: $AUDISP_PLUGIN_CONF_FILE (facility: $AUDIT_FACILITY)"
+        chmod 640 "$AUDISP_PLUGIN_CONF_FILE"
+        log "Audisp plugin yapılandırıldı: $AUDISP_PLUGIN_CONF_FILE (facility: $AUDIT_FACILITY)"
+    fi
 
     # Audit kuralları dizini ve dosyası
     mkdir -p "$AUDIT_RULES_D_DIR"
@@ -299,7 +301,6 @@ EOF
     # Audit kurallarını yükle
     log "Audit kuralları yükleniyor..."
     systemctl enable auditd >> "$LOG_FILE" 2>&1
-    # Auditd çalışmıyorsa başlat
     systemctl is-active --quiet auditd || systemctl restart auditd >> "$LOG_FILE" 2>&1
 
     if command -v augenrules &>/dev/null; then
@@ -353,7 +354,7 @@ if \$syslogfacility-text == "kern" then {
     stop
 }
 
-# Yalnızca local3 facility (audit) kayıtlarını işlemek
+# Yalnızca local3 facility (audit) kayıtlarını işlemek – yalnızca saldırı tespiti ile ilgili anahtarlar:
 if \$syslogfacility-text == "$AUDIT_FACILITY" and (
        \$msg contains "type=EXECVE" 
     or \$msg contains "key=\"root_execve\"" 
@@ -361,7 +362,7 @@ if \$syslogfacility-text == "$AUDIT_FACILITY" and (
     or \$msg contains "key=\"privilege_" 
     or \$msg contains "key=\"suspicious_utility_"
 ) then {
-    # EXECVE içeren kayıtlar, Python script ile dönüştürülecek
+    # EXECVE içeren kayıtları öncelikle Python script ile dönüştür
     if \$msg contains "type=EXECVE" then {
         action(
             type="omprog"
@@ -370,7 +371,7 @@ if \$syslogfacility-text == "$AUDIT_FACILITY" and (
         )
     }
 
-    # Filtrelenen tüm saldırı tespiti kayıtlarını QRadar’a TCP üzerinden gönder
+    # Tüm filtrelenen saldırı tespiti kayıtlarını QRadar’a TCP üzerinden gönder
     action(
         type="omfwd"
         target="$SIEM_IP"
@@ -378,7 +379,7 @@ if \$syslogfacility-text == "$AUDIT_FACILITY" and (
         protocol="tcp"
         name="ForwardAuditToSIEM"
     )
-    stop    # Daha fazla işlenmesin, tekrar gitmesin
+    stop    # İlgili kayıt işlendi, başka zincirlere gitmesin
 }
 EOF
 
@@ -468,7 +469,7 @@ systemctl is-active --quiet auditd && log "Auditd servisi aktif." || log "WARNIN
 systemctl is-active --quiet rsyslog && log "Rsyslog servisi aktif." || log "WARNING: Rsyslog servisi çalışmıyor."
 
 # Test amaçlı audit tetikleme
-local AUDIT_TEST_KEY="iam_passwd_changes"
+AUDIT_TEST_KEY="iam_passwd_changes"
 log "Test audit olayı tetikleniyor: /etc/passwd dosyasına dokunma (key: $AUDIT_TEST_KEY)..."
 touch /etc/passwd 2>/dev/null || log "WARNING: /etc/passwd dokunulamadı."
 sleep 3
@@ -481,7 +482,7 @@ else
 fi
 
 # Test amaçlı syslog gönderme
-local TEST_MSG="Unified script test log: facility=$AUDIT_FACILITY $(date)"
+TEST_MSG="Unified script test log: facility=$AUDIT_FACILITY $(date)"
 log "logger ile test mesajı gönderiliyor ($AUDIT_FACILITY): '$TEST_MSG'"
 logger -p "$AUDIT_FACILITY.info" "$TEST_MSG"
 
