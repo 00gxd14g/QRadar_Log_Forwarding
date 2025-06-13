@@ -1,24 +1,5 @@
 #!/usr/bin/env bash
 #
-# QRadar Unified Log Forwarding Setup Script v3.1
-# Bu betik, çoklu platform desteği ile auditd ve rsyslog'u otomatik yapılandırarak
-# QRadar SIEM'e optimize edilmiş ve güvenli log iletimi sağlar.
-#
-# v3.1 Değişiklikleri:
-# - GÜVENLİK: `eval` komutu kaldırılarak command injection riski giderildi.
-# - KARARLILIK: Rsyslog yapılandırma hatasında betiğin durması sağlandı.
-# - HATA AYIKLAMA: Python parser testindeki hata gizleme sorunu düzeltildi.
-# - İYİLEŞTİRME: AppArmor için daha işlevsel bir kural eklendi.
-#
-# Özellikler:
-# - Debian/Ubuntu/RHEL/CentOS/Oracle/Alma/Rocky Linux desteği
-# - MITRE ATT&CK uyumlu audit kuralları
-# - EXECVE komut argümanlarını birleştiren Python script
-# - Kapsamlı hata yönetimi ve otomatik düzeltme
-# - SELinux/AppArmor/Firewall otomatik yapılandırması
-# - Gereksiz kernel/daemon loglarını filtreleme
-# - Detaylı logging ve diagnostics
-#
 # Kullanım: sudo bash qradar_unified_setup.sh <SIEM_IP> <SIEM_PORT>
 #
 
