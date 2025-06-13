@@ -1,16 +1,6 @@
 #!/usr/bin/env bash
 #
 # QRadar Unified Log Forwarding Setup Script v4.0 - Enhanced
-# Bu betik, çoklu platform desteği ile auditd ve rsyslog'u otomatik yapılandırarak
-# QRadar SIEM'e optimized log forwarding sağlar.
-#
-# Özellikler:
-# - Eksik paketler için alternatif çözümler
-# - Audisp olmadan doğrudan auditd->rsyslog entegrasyonu
-# - Gelişmiş log filtreleme (gereksiz logları engelleme)
-# - Otomatik fallback mekanizmaları
-# - EXECVE parser'ın rsyslog ile doğru entegrasyonu
-#
 
 set -euo pipefail
 
