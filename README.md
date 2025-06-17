@@ -1,197 +1,334 @@
-# QRadar Log Forwarding Setup Script
+# QRadar Log Forwarding Setup
 
-![QRadar](https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/320px-IBM_logo.svg.png)
+![QRadar](https://img.shields.io/badge/IBM-QRadar-blue?style=flat-square)
+![Linux](https://img.shields.io/badge/OS-Linux-yellow?style=flat-square)
+![Bash](https://img.shields.io/badge/Shell-Bash-green?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.6+-red?style=flat-square)
 
-## Overview
+An enterprise-grade, production-ready solution for configuring Linux systems to forward audit logs to IBM QRadar SIEM with optimized log filtering, command argument concatenation, and comprehensive security monitoring designed for customer environments.
 
-The **QRadar Log Forwarding Setup Script** is a comprehensive Bash script designed to automate the configuration of `auditd` and `rsyslog` on various Linux distributions to forward audit and system logs to IBM QRadar. The script not only sets up the necessary configurations but also includes diagnostic tools to detect and automatically fix common issues, ensuring seamless log transmission to your QRadar instance.
+## 🚀 Features
 
-## Features
+- **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
+- **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
+- **Comprehensive Audit Rules**: 50+ security monitoring rules covering system administration, network changes, and suspicious activities
+- **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
+- **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
+- **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
+- **Production Ready**: Designed for enterprise environments with proper error handling and recovery
 
-- **Multi-Distribution Support**: Compatible with Debian, Ubuntu, Red Hat, CentOS, and Oracle Linux.
-- **Automated Package Installation**: Installs required packages (`auditd`, `audispd-plugins`, `rsyslog`) using the appropriate package manager.
-- **Auditd Configuration**: Sets up audit rules to log all user commands and system activities.
-- **Rsyslog Configuration**: Configures `rsyslog` to forward logs to QRadar using the `local1` facility.
-- **Diagnostic and Auto-Fix**: Detects common configuration issues and attempts to automatically resolve them.
-- **Comprehensive Logging**: Logs all script activities and diagnostic results to `/var/log/setup_logging.sh.log`.
-- **Security Checks**: Verifies permissions and checks for SELinux/AppArmor settings that might interfere with log forwarding.
+## 📋 Prerequisites
 
-## Table of Contents
-
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Script Functionality](#script-functionality)
-- [Logging and Diagnostics](#logging-and-diagnostics)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
-
-## Prerequisites
-
+### System Requirements
+- **Root Access**: Must be run with sudo/root privileges
 - **Supported Operating Systems**:
-  - Debian (any version)
-  - Ubuntu (any version)
-  - Red Hat Enterprise Linux (RHEL) (any version)
-  - CentOS (any version)
-  - Oracle Linux (any version)
-- **Root Privileges**: The script must be run with root permissions.
-- **Network Access**: Ensure that the system can communicate with the QRadar server on the specified IP and port (default: TCP/514).
+  - Debian (9, 10, 11, 12)
+  - Ubuntu (18.04, 20.04, 22.04, 24.04)
+  - Kali Linux (current)
+  - RHEL/CentOS (7, 8, 9)
+  - Oracle Linux (7, 8, 9)
+  - AlmaLinux (8, 9)
+  - Rocky Linux (8, 9)
 
-## Installation
+### Network Requirements
+- **QRadar Connectivity**: System must be able to reach QRadar server on specified IP and port
+- **Default Port**: TCP 514 (syslog), but configurable
+- **Firewall**: Script automatically configures firewalld on RHEL-based systems
 
-1. **Clone the Repository**
+### Package Dependencies
+The script automatically installs required packages:
+- `auditd` - Linux audit framework
+- `audispd-plugins` - Audit dispatcher plugins (Debian/Ubuntu)
+- `rsyslog` - System logging daemon
+- `python3` - Required for command concatenation script
 
+## 🛠️ Installation & Usage
+
+### Quick Start
+
+1. **Download the script**:
    ```bash
-   git clone https://github.com/00gxd14g/qradar-log-forwarding.git
-   cd qradar-log-forwarding```
+   git clone https://github.com/yourusername/qradar-log-forwarding.git
+   cd qradar-log-forwarding
+   chmod +x setup_qradar_logging.sh
+   ```
 
-## Usage
+2. **Run the setup**:
+   ```bash
+   sudo ./setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
+   ```
 
-Run the script with the QRadar server IP address and port as arguments.
-
-```bash
-sudo bash /usr/local/bin/setup_logging.sh <QRADAR_IP> <QRADAR_PORT>
-```
-## Script Functionality
-
-The `setup_logging.sh` script automates the configuration of `auditd` and `rsyslog` to forward logs to IBM QRadar. Below is a detailed breakdown of its functionality:
-
-### Distribution and Version Detection
-
-**Purpose**: Determines the Linux distribution and version to use the appropriate package manager.
-
-**Supported Distributions:**
-
-- Debian
-- Ubuntu
-- Red Hat Enterprise Linux (RHEL)
-- CentOS
-- Oracle Linux
-
-### Package Installation
-
-**Purpose**: Installs the necessary packages required for audit logging and syslog forwarding.
-
-**Packages:**
-
-- `auditd`: Provides a framework for auditing system events.
-- `audispd-plugins`: Provides plugins for `auditd`.
-- `rsyslog`: Provides the syslog daemon for forwarding logs.
-
-**Process:**
-
-- Uses `apt-get` for Debian/Ubuntu.
-- Uses `dnf` or `yum` for Red Hat/CentOS/Oracle Linux.
-
-### Service Configuration
-
-#### Auditd Configuration
-
-**Purpose**: Sets up audit rules to monitor system activities and user commands.
-
-**Actions:**
-
-- Creates or updates `/etc/audit/rules.d/audit.rules` with predefined audit rules.
-- Ensures `auditd` is enabled and running.
-
-#### Audisp-syslog Plugin Configuration
-
-**Purpose**: Configures `auditd` to forward audit logs to `rsyslog`.
-
-**Actions:**
-
-- Configures `/etc/audit/plugins.d/syslog.conf` to enable the `audisp-syslog` plugin.
-- Sets the plugin to use the `LOG_LOCAL1` facility.
-- Restarts `auditd` to apply changes.
-
-#### Rsyslog Configuration
-
-**Purpose**: Configures `rsyslog` to forward logs to QRadar.
-
-**Actions:**
-
-- Creates or updates `/etc/rsyslog.d/60-qradar.conf` with forwarding rules for `local1.*` to the QRadar server.
-- Restarts `rsyslog` to apply changes.
-
-### Diagnostics and Auto-Fix
-
-**Purpose**: Detects common configuration issues and attempts to automatically resolve them.
-
-**Diagnostics:**
-
-- **Rsyslog Diagnostics**: Checks if `rsyslog` is active, validates the configuration syntax, and ensures log files exist with correct permissions.
-- **Auditd Diagnostics**: Checks if `auditd` is active, inspects audit logs for errors, and verifies that audit rules are correctly loaded.
-- **Permissions Diagnostics**: Ensures `/var/log/syslog` has appropriate write permissions for `rsyslog`.
-- **SELinux/AppArmor Diagnostics**: Checks if SELinux or AppArmor is enforcing policies that may block log forwarding.
-
-**Auto-Fix Mechanisms:**
-
-- If issues are detected in `rsyslog` or `auditd` configurations, the script attempts to fix the configurations and restart the services.
-
-### Testing
-
-#### Local Syslog Test
-
-**Purpose**: Verifies that `rsyslog` is correctly forwarding logs locally.
-
-**Actions:**
-
-- Sends a test log message using the `logger` command.
-- Checks if the message appears in `/var/log/syslog`.
-- If not found, runs diagnostics and attempts to fix `rsyslog` configuration, then retries the test.
-
-#### Audit Log Test
-
-**Purpose**: Verifies that `auditd` is correctly logging system events and forwarding them to `rsyslog`.
-
-**Actions:**
-
-- Touches `/etc/passwd` to generate an audit event.
-- Checks if the audit event appears using `ausearch`.
-- Checks if the audit log is forwarded to `/var/log/syslog`.
-- If not found, runs diagnostics and attempts to fix `auditd` and `audisp-syslog` configuration, then retries the test.
-
-### Final Diagnostics
-
-- **Permissions Check**: Ensures `/var/log/syslog` has the correct permissions.
-- **SELinux/AppArmor Check**: Confirms that security modules are not blocking log forwarding.
-
-### Logging
-
-**Purpose**: Keeps a detailed log of all script actions and diagnostic results.
-
-**Log File**: `/var/log/setup_logging.sh.log`
-
-**Usage:**
-
-- Review this log file to understand what actions the script performed and any issues it encountered or resolved.
-
-### Final Instructions
-
-**Network Verification**: The script suggests using `tcpdump` on the QRadar server to verify that logs are being received.
-
-**Example Command:**
+### Example Usage
 
 ```bash
-sudo tcpdump -i eth0 host <QRADAR_IP> and port <QRADAR_PORT> -nn -vv
+# Configure for QRadar at 192.168.1.100 on port 514
+sudo ./setup_qradar_logging.sh 192.168.1.100 514
+
+# Configure for QRadar at 10.0.0.50 on port 1514
+sudo ./setup_qradar_logging.sh 10.0.0.50 1514
 ```
+
+### Command Line Arguments
+
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `QRADAR_IP` | IP address of your QRadar server | `192.168.1.100` |
+| `QRADAR_PORT` | Port number for log forwarding | `514` |
+
+## 🔧 Configuration Details
+
+### Audit Rules Coverage
+
+The script implements comprehensive security monitoring covering:
+
+#### System Administration
+- Password file modifications (`/etc/passwd`, `/etc/shadow`)
+- User and group management (`/etc/group`, `/etc/gshadow`)
+- Sudo configuration changes (`/etc/sudoers`)
+- SSH configuration monitoring
+
+#### Command Execution
+- All root commands (`euid=0`)
+- User commands (`euid>=1000`)
+- Privilege escalation attempts (`su`, `sudo`)
+- Shell and interpreter execution
+
+#### Network Configuration
+- Hostname and domain changes
+- Network interface configuration
+- Hosts file modifications
+- Distribution-specific network scripts
+
+#### System State Changes
+- System shutdown/reboot commands
+- Kernel module loading/unloading
+- Authentication system changes (PAM)
+
+#### Suspicious Activities
+- Network tools usage (`wget`, `curl`, `nc`)
+- Remote access tools (`ssh`, `scp`, `rsync`)
+- Temporary file system access
+- System call monitoring (`ptrace`)
+
+### File Locations
+
+After installation, configuration files are located at:
+
+```
+/etc/audit/rules.d/qradar.rules          # Audit rules
+/etc/audit/plugins.d/syslog.conf         # Audisp-syslog plugin config
+/etc/rsyslog.d/10-qradar.conf            # Rsyslog QRadar forwarding config
+/usr/local/bin/concat_execve.py          # Command concatenation script
+/var/log/qradar_setup.log                # Installation log
+/etc/qradar_backup_YYYYMMDD_HHMMSS/      # Configuration backups
+```
+
+## 🔍 Testing & Verification
+
+### Automated Testing
+
+The script includes built-in diagnostic functions that test:
+
+1. **Service Status**: Verifies auditd and rsyslog are running
+2. **Configuration Validation**: Checks rsyslog configuration syntax
+3. **Local Syslog Test**: Sends test message through syslog pipeline
+4. **Audit Functionality**: Triggers audit event and verifies logging
+5. **Network Connectivity**: Tests connection to QRadar server
+
+### Manual Testing
+
+#### Test Local Syslog
+```bash
+logger -p local3.info "Test message to QRadar"
+```
+
+#### Test Audit Events
+```bash
+sudo touch /etc/passwd  # Triggers identity_changes audit rule
+```
+
+#### Monitor Network Traffic
+```bash
+sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
+```
+
+#### Check Command Concatenation
+```bash
+# Test the Python script directly
+echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/concat_execve.py --test
+```
+
+## 🛡️ Security Considerations
+
+### SELinux Configuration
+For RHEL-based systems with SELinux enabled, the script automatically:
+- Enables `rsyslogd_can_network_connect` boolean
+- Restores proper SELinux contexts for the Python script
+- Logs SELinux-related warnings for manual review
+
+### Firewall Configuration
+On systems with firewalld active, the script:
+- Adds the QRadar port to the firewall rules
+- Applies changes permanently
+- Verifies rule activation
+
+### File Permissions
+All configuration files are created with appropriate permissions:
+- Audit rules: `640` (root:root)
+- Plugin configurations: `640` (root:root)
+- Python script: `755` (executable)
+- Log files: `640` (root:root)
+
+## 📊 Log Format & Processing
+
+### Original EXECVE Format
+```
+type=EXECVE msg=audit(1618834123.456:789): argc=3 a0="ls" a1="-la" a2="/tmp"
+```
+
+### Processed Format
+```
+QRADAR_PROCESSED: type=EXECVE msg=audit(1618834123.456:789): argc=3 cmd="ls -la /tmp"
+```
+
+### Benefits
+- **Simplified Parsing**: Single `cmd` field instead of multiple `aX` fields
+- **Better Readability**: Complete command visible in SIEM
+- **Enhanced Analytics**: Easier to create QRadar rules and searches
+- **Processing Indicator**: `QRADAR_PROCESSED` prefix for tracking
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+#### Services Not Starting
+```bash
+# Check service status
+sudo systemctl status auditd rsyslog
+
+# Check logs
+sudo journalctl -u auditd -f
+sudo journalctl -u rsyslog -f
+```
+
+#### No Logs Reaching QRadar
+```bash
+# Verify local syslog is working
+sudo grep "local3" /var/log/syslog
+
+# Check network connectivity
+sudo telnet <QRADAR_IP> <QRADAR_PORT>
+
+# Monitor outbound traffic
+sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT>
+```
+
+#### SELinux Denials
+```bash
+# Check for AVC denials
+sudo ausearch -m avc -ts recent
+
+# Check SELinux booleans
+sudo getsebool -a | grep rsyslog
+```
+
+#### Python Script Issues
+```bash
+# Test script manually
+sudo python3 /usr/local/bin/concat_execve.py --test
+
+# Check script permissions
+ls -la /usr/local/bin/concat_execve.py
+```
+
+### Log Files
+
+Check these log files for troubleshooting:
+- `/var/log/qradar_setup.log` - Setup script execution log
+- `/var/log/audit/audit.log` - Audit events
+- `/var/log/syslog` or `/var/log/messages` - System logs
+- `/var/log/omprog_execve_output.log` - Python script output (if configured)
+
+## 🔄 Maintenance
+
+### Regular Tasks
+
+#### Update Audit Rules
+Edit `/etc/audit/rules.d/qradar.rules` and reload:
+```bash
+sudo augenrules --load
+sudo systemctl restart auditd
+```
+
+#### Monitor Log Volume
+```bash
+# Check audit log size
+sudo du -sh /var/log/audit/
+
+# Monitor syslog rates
+sudo journalctl -u rsyslog --since "1 hour ago" | wc -l
+```
+
+#### Verify QRadar Connectivity
+```bash
+# Test connection periodically
+timeout 5 bash -c "cat < /dev/null > /dev/tcp/<QRADAR_IP>/<QRADAR_PORT>"
+```
+
+### Configuration Backup
+
+The script automatically creates backups in:
+```
+/etc/qradar_backup_YYYYMMDD_HHMMSS/
+```
+
+To restore from backup:
+```bash
+sudo cp /etc/qradar_backup_*/filename /etc/original/location/
+sudo systemctl restart auditd rsyslog
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/improvement`)
+3. Make your changes
+4. Add tests for new functionality
+5. Commit your changes (`git commit -am 'Add new feature'`)
+6. Push to the branch (`git push origin feature/improvement`)
+7. Create a Pull Request
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🆘 Support
+
+- **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/yourusername/qradar-log-forwarding/issues)
+- **Documentation**: Check the [Wiki](https://github.com/yourusername/qradar-log-forwarding/wiki) for additional documentation
+- **Security**: Report security vulnerabilities privately to security@yourproject.com
+
+## 📈 Changelog
+
+### Version 3.0
+- Complete rewrite with unified script
+- Enhanced error handling and logging
+- Comprehensive audit rules (50+ monitoring points)
+- Improved Python concatenation script
+- Automatic SELinux and firewall configuration
+- Support for all major Linux distributions
+- Built-in diagnostic and testing functions
+
+### Version 2.0
+- Added command concatenation functionality
+- Improved RHEL support
+- Basic error handling
+
+### Version 1.0
+- Initial release
+- Basic audit forwarding
+- Limited distribution support
 
 ---
 
-This `Usage` and `Script Functionality` section is now formatted in Markdown and can be directly included in your `README.md` file on GitHub. Make sure to replace placeholders like `<QRADAR_IP>` and `<QRADAR_PORT>` with your actual QRadar server details when running the script.
-
-### Additional Recommendations
-
-- **Ensure Permissions**: Verify that the script has the necessary execute permissions and is run with root privileges.
-  
-- **Customize Audit Rules**: Depending on your specific logging requirements, you might want to customize the audit rules within the script.
-
-- **Secure Log Transmission**: Consider configuring `rsyslog` to use TLS for secure log transmission to QRadar.
-
-- **Regular Maintenance**: Regularly check the log file (`/var/log/setup_logging.sh.log`) for any issues or updates needed for your logging setup.
-
-Feel free to modify the sections to better fit your project's specific needs or to add any additional information that might be helpful for users.
-
-
+**Made with ❤️ for better security monitoring**
