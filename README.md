@@ -48,8 +48,8 @@ The script automatically installs required packages:
 
 1. **Download the script**:
    ```bash
-   git clone https://github.com/yourusername/qradar-log-forwarding.git
-   cd qradar-log-forwarding
+   git clone https://github.com/00gxd14g/QRadar_Log_Forwarding.git
+   cd QRadar_Log_Forwarding
    chmod +x setup_qradar_logging.sh
    ```
 
@@ -304,9 +304,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🆘 Support
 
-- **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/yourusername/qradar-log-forwarding/issues)
-- **Documentation**: Check the [Wiki](https://github.com/yourusername/qradar-log-forwarding/wiki) for additional documentation
-- **Security**: Report security vulnerabilities privately to security@yourproject.com
+- **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/00gxd14g/QRadar_Log_Forwarding/issues)
+- **Documentation**: Check the [Wiki](https://github.com/00gxd14g/QRadar_Log_Forwarding/wiki) for additional documentation
+- **Security**: Report security vulnerabilities privately to the project maintainer
 
 ## 📈 Changelog
 

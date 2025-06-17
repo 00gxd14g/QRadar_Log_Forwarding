@@ -1,47 +1,39 @@
-# Log files
-*.log
-logs/
-/var/log/
+# QRadar Log Forwarding - Git Ignore Rules
 
-# Backup files
-*.bak
-backup_*
-/etc/qradar_backup_*/
+# Logs
+*.log
+/var/log/qradar_setup.log
+/var/log/audit/
+logs/
 
 # Temporary files
 *.tmp
 *.temp
 .tmp/
+temp/
 
-# Editor files
-*~
-*.swp
-*.swo
-.vscode/
-.idea/
+# Configuration backups
+/etc/qradar_backup_*/
+backup_*/
+*.bak
+*.backup
 
-# OS generated files
+# System files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Python
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python compiled files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -58,6 +50,54 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Local configuration files
+config.local
+*.local
+.env
+.env.local
+
+# Certificate files
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Archive files (except releases)
+*.tar.gz
+*.zip
+*.rar
+*.7z
+!releases/*.tar.gz
+!releases/*.zip
+
+# Legacy script versions (keeping for historical reference in v2/ folder)
+setup_logging.sh
+setup_logging-v2.sh
+setup-loggingv2-rhel.sh
+00-siem.conf
+60-siem.conf
+audit.conf
+rsyslog.conf
 
 # Test files
 test_*.log
