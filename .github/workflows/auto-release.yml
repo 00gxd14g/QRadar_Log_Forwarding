@@ -1,0 +1,326 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'setup_qradar_logging.sh'
+      - 'concat_execve.py'
+      - 'CHANGELOG.md'
+      - 'README.md'
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v3.0.1)'
+        required: true
+        default: 'v3.0.1'
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Test Bash Script Syntax
+      run: |
+        bash -n setup_qradar_logging.sh
+        echo "✅ Bash script syntax check passed"
+    
+    - name: Test Python Script
+      run: |
+        python3 -m py_compile concat_execve.py
+        python3 concat_execve.py --test
+        echo "✅ Python script tests passed"
+    
+    - name: Validate Configuration Files
+      run: |
+        # Check if main files exist
+        test -f setup_qradar_logging.sh || exit 1
+        test -f concat_execve.py || exit 1
+        test -f README.md || exit 1
+        test -f CHANGELOG.md || exit 1
+        test -f LICENSE || exit 1
+        echo "✅ All required files present"
+
+  auto-version:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Get Current Version
+      id: get_version
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v3.0.0")
+        echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        
+        # Extract version numbers
+        VERSION=$(echo $LATEST_TAG | sed 's/v//')
+        MAJOR=$(echo $VERSION | cut -d. -f1)
+        MINOR=$(echo $VERSION | cut -d. -f2)
+        PATCH=$(echo $VERSION | cut -d. -f3)
+        
+        # Increment patch version
+        NEW_PATCH=$((PATCH + 1))
+        NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+        
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "version_number=${MAJOR}.${MINOR}.${NEW_PATCH}" >> $GITHUB_OUTPUT
+    
+    - name: Check if Release Needed
+      id: check_release
+      run: |
+        # Check if there are significant changes since last tag
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -z "$LAST_TAG" ]; then
+          echo "needs_release=true" >> $GITHUB_OUTPUT
+          echo "📦 No previous tag found, creating initial release"
+        else
+          # Check for changes in main files since last tag
+          CHANGES=$(git diff --name-only $LAST_TAG..HEAD -- setup_qradar_logging.sh concat_execve.py CHANGELOG.md README.md)
+          if [ -n "$CHANGES" ]; then
+            echo "needs_release=true" >> $GITHUB_OUTPUT
+            echo "📦 Changes detected in main files:"
+            echo "$CHANGES"
+          else
+            echo "needs_release=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No significant changes detected"
+          fi
+        fi
+    
+    - name: Update CHANGELOG
+      if: steps.check_release.outputs.needs_release == 'true'
+      run: |
+        NEW_VERSION="${{ steps.get_version.outputs.new_version }}"
+        VERSION_NUMBER="${{ steps.get_version.outputs.version_number }}"
+        DATE=$(date +%Y-%m-%d)
+        
+        # Create new changelog entry
+        sed -i "8i\\
+        \\
+        ## [$VERSION_NUMBER] - $DATE\\
+        \\
+        ### Changed\\
+        - Automated patch release with latest improvements\\
+        - Updated script functionality and error handling\\
+        - Enhanced documentation and configuration\\
+        \\
+        ### Fixed\\
+        - Minor bug fixes and optimizations\\
+        " CHANGELOG.md
+        
+        echo "✅ CHANGELOG updated for $NEW_VERSION"
+
+  create-release:
+    needs: [test, auto-version]
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && needs.auto-version.outputs.needs_release == 'true') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set Version
+      id: set_version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          echo "version_number=$(echo ${{ github.event.inputs.version }} | sed 's/v//')" >> $GITHUB_OUTPUT
+        else
+          echo "version=${{ needs.auto-version.outputs.new_version }}" >> $GITHUB_OUTPUT
+          echo "version_number=${{ needs.auto-version.outputs.version_number }}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Create Release Archive
+      run: |
+        VERSION="${{ steps.set_version.outputs.version }}"
+        VERSION_NUMBER="${{ steps.set_version.outputs.version_number }}"
+        
+        # Create releases directory
+        mkdir -p releases
+        
+        # Create archive excluding unnecessary files
+        tar -czf releases/QRadar_Log_Forwarding_${VERSION}.tar.gz \
+          --exclude='.git*' \
+          --exclude='releases' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='.DS_Store' \
+          .
+        
+        # Generate checksum
+        cd releases
+        SHA256=$(sha256sum QRadar_Log_Forwarding_${VERSION}.tar.gz | cut -d' ' -f1)
+        echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+        
+        echo "📦 Created release archive with SHA256: $SHA256"
+    
+    - name: Generate Release Notes
+      run: |
+        VERSION="${{ steps.set_version.outputs.version }}"
+        VERSION_NUMBER="${{ steps.set_version.outputs.version_number }}"
+        SHA256="${{ steps.create-archive.outputs.sha256 }}"
+        DATE=$(date +%Y-%m-%d)
+        
+        cat > releases/RELEASE_NOTES_${VERSION}.md << EOF
+        # QRadar Log Forwarding ${VERSION} - Release Notes
+        
+        Released: $DATE
+        
+        ## 🚀 What's New
+        
+        This release includes the latest improvements and bug fixes for the QRadar Log Forwarding solution.
+        
+        ### ✨ Features
+        - Universal Linux distribution support (Debian/Ubuntu/RHEL/CentOS/Oracle/AlmaLinux/Rocky)
+        - 50+ comprehensive audit rules for security monitoring
+        - Advanced EXECVE command concatenation for better SIEM parsing
+        - Production-ready with SELinux and firewall integration
+        - Built-in diagnostics and testing capabilities
+        - Comprehensive file tracking and backup system
+        
+        ### 🔧 Installation
+        
+        \`\`\`bash
+        # Download and setup
+        git clone https://github.com/00gxd14g/QRadar_Log_Forwarding.git
+        cd QRadar_Log_Forwarding
+        chmod +x setup_qradar_logging.sh
+        
+        # Run installation
+        sudo ./setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
+        \`\`\`
+        
+        ### 📊 File Locations
+        
+        \`\`\`
+        /etc/audit/rules.d/qradar.rules          # 50+ audit rules
+        /etc/audit/plugins.d/syslog.conf         # Audit dispatcher config
+        /etc/rsyslog.d/10-qradar.conf            # QRadar forwarding rules
+        /usr/local/bin/concat_execve.py          # Command concatenation script
+        /var/log/qradar_setup.log                # Setup execution log
+        /etc/qradar_backup_YYYYMMDD_HHMMSS/      # Configuration backups
+        \`\`\`
+        
+        ### 🔍 Testing
+        
+        \`\`\`bash
+        # Test local syslog
+        logger -p local3.info "Test message to QRadar"
+        
+        # Test command concatenation
+        python3 /usr/local/bin/concat_execve.py --test
+        
+        # Monitor network traffic
+        sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
+        \`\`\`
+        
+        ## 📋 Changelog
+        
+        See [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+        
+        ## 🔒 Security
+        
+        **SHA256**: \`$SHA256\`
+        
+        ## 🆘 Support
+        
+        - **Issues**: [GitHub Issues](https://github.com/00gxd14g/QRadar_Log_Forwarding/issues)
+        - **Documentation**: [Project README](README.md)
+        
+        ---
+        
+        *Made with ❤️ for better security monitoring*
+        EOF
+        
+        echo "📝 Generated release notes for $VERSION"
+    
+    - name: Commit Changes
+      if: github.event_name == 'push'
+      run: |
+        VERSION="${{ steps.set_version.outputs.version }}"
+        
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add CHANGELOG.md releases/
+        git commit -m "Auto-update for release $VERSION
+
+        - Updated CHANGELOG.md with $VERSION entry
+        - Generated release archive and notes
+        - Automated release preparation
+        
+        🤖 Generated by GitHub Actions" || echo "No changes to commit"
+    
+    - name: Create Git Tag
+      run: |
+        VERSION="${{ steps.set_version.outputs.version }}"
+        
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git tag -a $VERSION -m "QRadar Log Forwarding $VERSION
+
+        🚀 Automated Release
+        
+        ✨ Features:
+        - Universal Linux distribution support
+        - 50+ comprehensive audit rules
+        - EXECVE command concatenation
+        - SELinux and firewall integration
+        - Built-in diagnostics and testing
+        
+        📦 Installation:
+        sudo ./setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
+        
+        🔧 Automated release created by GitHub Actions"
+    
+    - name: Push Changes
+      run: |
+        git push origin main
+        git push origin --tags
+    
+    - name: Create GitHub Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        VERSION="${{ steps.set_version.outputs.version }}"
+        
+        gh release create $VERSION \
+          --title "QRadar Log Forwarding $VERSION" \
+          --notes-file releases/RELEASE_NOTES_${VERSION}.md \
+          --latest \
+          releases/QRadar_Log_Forwarding_${VERSION}.tar.gz
+        
+        echo "🎉 Released $VERSION successfully!"
+        echo "📋 Release URL: https://github.com/00gxd14g/QRadar_Log_Forwarding/releases/tag/$VERSION"
+
+  notify:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+    - name: Success Notification
+      run: |
+        echo "🎉 Release created successfully!"
+        echo "📦 Check releases at: https://github.com/00gxd14g/QRadar_Log_Forwarding/releases"
