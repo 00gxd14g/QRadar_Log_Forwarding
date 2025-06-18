@@ -24,7 +24,7 @@
 # Usage: sudo bash setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
 #
 # Author: QRadar Log Forwarding Project
-# Version: 3.1.3
+# Version: 3.1.4
 # ===============================================================================
 
 set -euo pipefail
@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.1.3"
+readonly SCRIPT_VERSION="3.1.4"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -625,6 +625,21 @@ if \$syslogfacility-text == "kern" then {
     stop
 }
 
+# Block noisy daemon and system operational messages
+if \$msg contains "daemon start" or \$msg contains "daemon stop" or \$msg contains "unknown file" or \$msg contains "systemd:" or \$msg contains "Starting " or \$msg contains "Stopping " or \$msg contains "Started " or \$msg contains "Stopped " then {
+    stop
+}
+
+# Block common noisy patterns
+if \$msg contains "NetworkManager" or \$msg contains "dhclient" or \$msg contains "chronyd" or \$msg contains "dbus" or \$msg contains "avahi" then {
+    stop
+}
+
+# Block non-security related cron messages
+if \$msg contains "CROND" and not (\$msg contains "FAILED" or \$msg contains "ERROR" or \$msg contains "denied") then {
+    stop
+}
+
 # Process audit logs from local3 facility (auditd)
 if \$syslogfacility-text == "local3" then {
     # Process EXECVE messages through concatenation script
@@ -662,29 +677,36 @@ if \$syslogfacility-text == "local3" then {
     stop
 }
 
-# Forward authentication events (sudo, su, ssh, etc.)
+# Forward authentication events (filtered for security relevance)
 if \$syslogfacility-text == "authpriv" or \$syslogfacility-text == "auth" then {
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        name="qradar_auth_forwarder"
-        queue.type="linkedlist"
-        queue.size="10000"
-        action.resumeRetryCount="-1"
-    )
+    # Only forward security-relevant authentication events
+    if \$msg contains "sudo" or \$msg contains "su:" or \$msg contains "ssh" or \$msg contains "login" or \$msg contains "authentication" or \$msg contains "FAILED" or \$msg contains "invalid" or \$msg contains "denied" or \$msg contains "accepted" or \$msg contains "publickey" or \$msg contains "password" then {
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            name="qradar_auth_forwarder"
+            queue.type="linkedlist"
+            queue.size="10000"
+            action.resumeRetryCount="-1"
+        )
+    }
+    stop
 }
 
-# Forward critical system messages only
+# Forward critical system messages (filtered for security relevance)
 if \$syslogseverity <= 3 then {
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        name="qradar_critical_forwarder"
-    )
+    # Exclude noisy critical messages that are not security-relevant
+    if not (\$msg contains "daemon start" or \$msg contains "daemon stop" or \$msg contains "unknown file" or \$msg contains "systemd:" or \$msg contains "Starting" or \$msg contains "Stopping" or \$msg contains "Started" or \$msg contains "Stopped" or \$msg contains "NetworkManager" or \$msg contains "chronyd" or \$msg contains "dhclient") then {
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            name="qradar_critical_forwarder"
+        )
+    }
 }
 EOF
     

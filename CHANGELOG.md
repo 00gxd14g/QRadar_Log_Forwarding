@@ -54,6 +54,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - T1548 - Abuse Elevation Control Mechanism
 - And many more...
 
+## [3.1.4] - 2025-06-18
+
+### Added
+- **Advanced Log Filtering**: Comprehensive noise reduction filters for cleaner QRadar logs
+- **Daemon Message Blocking**: Filters out "daemon start", "daemon stop", "unknown file" messages
+- **Operational Message Filtering**: Blocks systemd, NetworkManager, chronyd, dhclient operational logs
+- **Smart Authentication Filtering**: Only forwards security-relevant authentication events
+- **Critical Message Optimization**: Filters critical messages for security relevance
+
+### Enhanced
+- **Noise Reduction**: Dramatically reduced log volume by filtering non-security operational messages
+- **Security Focus**: Only security-relevant events are forwarded to QRadar
+- **Performance Optimization**: Reduced network traffic and QRadar storage requirements
+- **Smart Filtering**: Pattern-based filtering preserves important security events while blocking noise
+
+### Blocked Message Types
+- Daemon start/stop operational messages
+- Unknown file system messages  
+- systemd service lifecycle messages
+- NetworkManager connection events
+- chronyd time synchronization logs
+- dhclient DHCP operational messages
+- Non-security cron job messages
+- System startup/shutdown operational logs
+
 ## [3.1.3] - 2025-06-18
 
 ### Fixed
