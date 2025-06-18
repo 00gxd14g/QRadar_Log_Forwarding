@@ -54,6 +54,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - T1548 - Abuse Elevation Control Mechanism
 - And many more...
 
+## [3.1.2] - 2025-06-18
+
+### Fixed
+- **Audit Rules Filename**: Changed from qradar.rules to standard audit.rules filename
+- **Manual Service Control**: Implemented manual auditd stop/start with multiple fallback methods  
+- **Extra Rules Cleanup**: Automatic cleanup of any additional .rules files in audit directory
+- **RHEL 9+ Compatibility**: Extended RHEL 8+ handling to include version 9.x systems
+- **Service Management**: Enhanced auditd service control with force kill fallback
+
+### Changed
+- Script version updated to 3.1.2
+- Audit rules file location: `/etc/audit/rules.d/audit.rules` (standard filename)
+- Manual auditd service management replaces automatic systemctl handling
+- Comprehensive cleanup of duplicate audit configuration files
+- Updated documentation to reflect new file locations
+
 ## [3.1.0] - 2025-06-18
 
 ### Added

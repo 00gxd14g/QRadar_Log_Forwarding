@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.1.1"
+readonly SCRIPT_VERSION="3.1.2"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -44,7 +44,7 @@ declare -a CREATED_FILES=()
 declare -a BACKED_UP_FILES=()
 
 # Configuration file paths
-readonly AUDIT_RULES_FILE="/etc/audit/rules.d/qradar.rules"
+readonly AUDIT_RULES_FILE="/etc/audit/rules.d/audit.rules"
 readonly AUDISP_SYSLOG_CONF="/etc/audit/plugins.d/syslog.conf"
 readonly RSYSLOG_QRADAR_CONF="/etc/rsyslog.d/10-qradar.conf"
 readonly CONCAT_SCRIPT_PATH="/usr/local/bin/concat_execve.py"
@@ -763,34 +763,55 @@ restart_services() {
     # Enable auditd service
     systemctl enable auditd >> "$LOG_FILE" 2>&1 || warn "Failed to enable auditd"
     
-    # Stop auditd if running to ensure clean restart
-    # RHEL 8+ auditd special handling gerekiyor
-    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
-        # RHEL 8+ auditd service stop edilemez, sadece restart yapılabilir
-        log "INFO" "RHEL 8+ detected - using service auditd restart instead of systemctl"
-        service auditd restart >> "$LOG_FILE" 2>&1 || warn "Failed to restart auditd service"
-    else
-        systemctl stop auditd >> "$LOG_FILE" 2>&1 || log "INFO" "auditd was not running"
-    fi
+    # Manual auditd service management for better control
+    log "INFO" "Manually stopping auditd service..."
     
-    # Start auditd service - RHEL 8+ için özel handling
-    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
-        # RHEL 8+ auditd zaten restart edildi, sadece status kontrol et
-        if ! systemctl is-active --quiet auditd; then
-            service auditd start >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service"
+    # Force stop auditd using multiple methods
+    if systemctl is-active --quiet auditd; then
+        # Try systemctl first
+        if ! systemctl stop auditd >> "$LOG_FILE" 2>&1; then
+            log "INFO" "systemctl stop failed, trying service command..."
+            # Try service command
+            if ! service auditd stop >> "$LOG_FILE" 2>&1; then
+                log "INFO" "service stop failed, trying direct kill..."
+                # Force kill auditd process
+                pkill -f auditd >> "$LOG_FILE" 2>&1 || true
+                sleep 2
+            fi
         fi
     else
-        systemctl start auditd >> "$LOG_FILE" 2>&1 || {
-            log "WARN" "Failed to start auditd with systemctl, trying alternative approach..."
-            # Try starting auditd directly
-            /sbin/auditd >> "$LOG_FILE" 2>&1 || {
-                log "WARN" "Failed to start auditd directly, attempting service recovery..."
-                # Reset failed state and try again
-                systemctl reset-failed auditd >> "$LOG_FILE" 2>&1
-                sleep 1
-                systemctl start auditd >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service - audit functionality may be limited"
-            }
-        }
+        log "INFO" "auditd was not running"
+    fi
+    
+    # Wait for complete shutdown
+    sleep 2
+    
+    # Manual auditd service start with multiple fallback methods
+    log "INFO" "Manually starting auditd service..."
+    
+    # Try multiple methods to start auditd
+    local auditd_started=false
+    
+    # Method 1: systemctl
+    if systemctl start auditd >> "$LOG_FILE" 2>&1; then
+        auditd_started=true
+        log "INFO" "auditd started successfully with systemctl"
+    else
+        log "INFO" "systemctl start failed, trying service command..."
+        # Method 2: service command
+        if service auditd start >> "$LOG_FILE" 2>&1; then
+            auditd_started=true
+            log "INFO" "auditd started successfully with service command"
+        else
+            log "INFO" "service start failed, trying direct execution..."
+            # Method 3: direct execution
+            if /sbin/auditd >> "$LOG_FILE" 2>&1; then
+                auditd_started=true
+                log "INFO" "auditd started successfully with direct execution"
+            else
+                warn "Failed to start auditd with all methods - audit functionality may be limited"
+            fi
+        fi
     fi
     
     # Wait for auditd to fully initialize
@@ -1046,8 +1067,18 @@ cleanup_old_files() {
     local old_files=(
         "/etc/rsyslog.d/60-siem.conf"
         "/etc/rsyslog.d/00-siem.conf"
-        "/etc/audit/rules.d/audit.rules"
+        "/etc/audit/rules.d/qradar.rules"
     )
+    
+    # Clean up any extra .rules files in audit directory except audit.rules
+    if [[ -d "/etc/audit/rules.d" ]]; then
+        for rules_file in /etc/audit/rules.d/*.rules; do
+            if [[ -f "$rules_file" ]] && [[ "$rules_file" != "$AUDIT_RULES_FILE" ]]; then
+                backup_file "$rules_file"
+                rm -f "$rules_file" && log "INFO" "Removed extra audit rules file: $rules_file"
+            fi
+        done
+    fi
     
     for file in "${old_files[@]}"; do
         if [[ -f "$file" ]] && [[ "$file" != "$RSYSLOG_QRADAR_CONF" ]] && [[ "$file" != "$AUDIT_RULES_FILE" ]]; then

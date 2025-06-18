@@ -122,7 +122,7 @@ The script implements comprehensive security monitoring covering:
 After installation, configuration files are located at:
 
 ```
-/etc/audit/rules.d/qradar.rules          # Audit rules
+/etc/audit/rules.d/audit.rules          # Audit rules
 /etc/audit/plugins.d/syslog.conf         # Audisp-syslog plugin config
 /etc/rsyslog.d/10-qradar.conf            # Rsyslog QRadar forwarding config
 /usr/local/bin/concat_execve.py          # Command concatenation script
@@ -290,7 +290,7 @@ Check these log files for troubleshooting:
 ### Regular Tasks
 
 #### Update Audit Rules
-Edit `/etc/audit/rules.d/qradar.rules` and reload:
+Edit `/etc/audit/rules.d/audit.rules` and reload:
 ```bash
 sudo augenrules --load
 sudo systemctl restart auditd
