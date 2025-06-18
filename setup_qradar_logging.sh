@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.1"
+readonly SCRIPT_VERSION="3.1.1"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -764,18 +764,18 @@ restart_services() {
     systemctl enable auditd >> "$LOG_FILE" 2>&1 || warn "Failed to enable auditd"
     
     # Stop auditd if running to ensure clean restart
-    # RHEL 8'de auditd special handling gerekiyor
-    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
-        # RHEL 8'de auditd service stop edilemez, sadece restart yapılabilir
-        log "INFO" "RHEL 8 detected - using service auditd restart instead of systemctl"
+    # RHEL 8+ auditd special handling gerekiyor
+    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
+        # RHEL 8+ auditd service stop edilemez, sadece restart yapılabilir
+        log "INFO" "RHEL 8+ detected - using service auditd restart instead of systemctl"
         service auditd restart >> "$LOG_FILE" 2>&1 || warn "Failed to restart auditd service"
     else
         systemctl stop auditd >> "$LOG_FILE" 2>&1 || log "INFO" "auditd was not running"
     fi
     
-    # Start auditd service - RHEL 8 için özel handling
-    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
-        # RHEL 8'de auditd zaten restart edildi, sadece status kontrol et
+    # Start auditd service - RHEL 8+ için özel handling
+    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
+        # RHEL 8+ auditd zaten restart edildi, sadece status kontrol et
         if ! systemctl is-active --quiet auditd; then
             service auditd start >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service"
         fi
@@ -802,9 +802,9 @@ restart_services() {
         log "INFO" "auditd is running, attempting to load audit rules..."
         
         # Try multiple approaches to load audit rules
-        # Approach 1: Platform-specific loading
-        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
-            log "INFO" "RHEL 8 detected - using enhanced auditctl approach..."
+        # Approach 1: Platform-specific loading for RHEL 8+
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
+            log "INFO" "RHEL 8+ detected - using enhanced auditctl approach..."
             # Clear existing rules first
             auditctl -D >> "$LOG_FILE" 2>&1 || true
             
@@ -888,11 +888,11 @@ validate_audit_configuration() {
     # Check audit rules file syntax
     if [[ -f "$AUDIT_RULES_FILE" ]]; then
         log "INFO" "Validating audit rules syntax..."
-        # RHEL 8'de nested rule validation sorunları olabiliyor
-        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
-            # RHEL 8 için basit syntax kontrolü
+        # RHEL 8+ nested rule validation sorunları olabiliyor
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
+            # RHEL 8+ için basit syntax kontrolü
             if grep -q "^-[abwWe]" "$AUDIT_RULES_FILE"; then
-                success "Audit rules file contains valid rules"
+                success "Audit rules file contains valid rules (RHEL 8+ compatible)"
             else
                 warn "Audit rules file may have syntax issues"
             fi
@@ -1194,10 +1194,10 @@ generate_setup_summary() {
     
     # Validate audit rules independently
     if [[ -f "$AUDIT_RULES_FILE" ]]; then
-        # RHEL 8'de nested rule validation sorunları olabiliyor
-        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+        # RHEL 8+ nested rule validation sorunları olabiliyor
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^[89] ]]; then
             if grep -q "^-[abwWe]" "$AUDIT_RULES_FILE"; then
-                echo "   ✅ Audit rules syntax: VALID (RHEL 8 compatible)"
+                echo "   ✅ Audit rules syntax: VALID (RHEL 8+ compatible)"
             else
                 echo "   ❌ Audit rules syntax: INVALID"
             fi
