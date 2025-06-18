@@ -54,6 +54,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - T1548 - Abuse Elevation Control Mechanism
 - And many more...
 
+## [3.1.3] - 2025-06-18
+
+### Fixed
+- **Header Version Mismatch**: Fixed version number in script header to match actual version
+- **Variable Scope Issue**: Fixed auditd_started variable scope for proper status tracking
+- **Package Installation Logic**: Consolidated duplicate dnf/yum package checking logic
+- **Safe Audit Testing**: Replaced risky `touch /etc/passwd` with safe `cat /etc/passwd` for audit testing
+- **Glob Expansion Safety**: Added nullglob protection for .rules file cleanup
+- **Network Connectivity Fallbacks**: Enhanced QRadar connectivity testing with nc/telnet fallbacks
+
+### Enhanced
+- **Robust Network Testing**: Multi-method connectivity testing (bash /dev/tcp → nc → telnet)
+- **Error Handling**: Improved error handling throughout the script
+- **Code Quality**: Eliminated redundant code and improved logic flow
+- **Safety Measures**: Added protective measures for file operations
+
 ## [3.1.2] - 2025-06-18
 
 ### Fixed

@@ -24,7 +24,7 @@
 # Usage: sudo bash setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
 #
 # Author: QRadar Log Forwarding Project
-# Version: 3.0
+# Version: 3.1.3
 # ===============================================================================
 
 set -euo pipefail
@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.1.2"
+readonly SCRIPT_VERSION="3.1.3"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -195,15 +195,7 @@ check_and_install_packages() {
                     log "INFO" "Package $package is already installed"
                 fi
                 ;;
-            dnf)
-                if ! rpm -q "$package" >/dev/null 2>&1; then
-                    packages_to_install+=("$package")
-                    log "INFO" "Package $package is not installed"
-                else
-                    log "INFO" "Package $package is already installed"
-                fi
-                ;;
-            yum)
+            dnf|yum)
                 if ! rpm -q "$package" >/dev/null 2>&1; then
                     packages_to_install+=("$package")
                     log "INFO" "Package $package is not installed"
@@ -760,6 +752,9 @@ configure_rhel_specifics() {
 restart_services() {
     log "INFO" "Restarting and enabling services..."
     
+    # Global variable to track auditd status
+    local auditd_started=false
+    
     # Enable auditd service
     systemctl enable auditd >> "$LOG_FILE" 2>&1 || warn "Failed to enable auditd"
     
@@ -790,7 +785,6 @@ restart_services() {
     log "INFO" "Manually starting auditd service..."
     
     # Try multiple methods to start auditd
-    local auditd_started=false
     
     # Method 1: systemctl
     if systemctl start auditd >> "$LOG_FILE" 2>&1; then
@@ -816,6 +810,11 @@ restart_services() {
     
     # Wait for auditd to fully initialize
     sleep 3
+    
+    # Check if auditd started successfully before proceeding
+    if [[ "$auditd_started" == "false" ]]; then
+        warn "auditd failed to start - attempting to continue with limited functionality"
+    fi
     
     # Load audit rules if auditd is running with enhanced error handling
     local audit_rules_loaded=false
@@ -1032,7 +1031,8 @@ run_diagnostics() {
     
     # Test audit functionality
     log "INFO" "Testing audit functionality..."
-    touch /etc/passwd
+    # Use safe method to trigger audit event - read instead of touch
+    cat /etc/passwd > /dev/null 2>&1 || true
     sleep 2
     
     if ausearch --start today -k identity_changes | grep -q "type=SYSCALL"; then
@@ -1052,8 +1052,20 @@ run_diagnostics() {
     log "INFO" "Testing network connectivity to QRadar..."
     if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$QRADAR_IP/$QRADAR_PORT" 2>/dev/null; then
         success "Network connectivity to QRadar ($QRADAR_IP:$QRADAR_PORT) is working"
+    elif command_exists nc; then
+        if timeout 5 nc -z "$QRADAR_IP" "$QRADAR_PORT" 2>/dev/null; then
+            success "Network connectivity to QRadar ($QRADAR_IP:$QRADAR_PORT) is working (via nc)"
+        else
+            warn "Cannot connect to QRadar at $QRADAR_IP:$QRADAR_PORT - please verify QRadar is running and accessible"
+        fi
+    elif command_exists telnet; then
+        if timeout 5 bash -c "echo 'quit' | telnet $QRADAR_IP $QRADAR_PORT" >/dev/null 2>&1; then
+            success "Network connectivity to QRadar ($QRADAR_IP:$QRADAR_PORT) is working (via telnet)"
+        else
+            warn "Cannot connect to QRadar at $QRADAR_IP:$QRADAR_PORT - please verify QRadar is running and accessible"
+        fi
     else
-        warn "Cannot connect to QRadar at $QRADAR_IP:$QRADAR_PORT - please verify QRadar is running and accessible"
+        warn "Cannot test QRadar connectivity - no suitable tools available (nc/telnet/bash /dev/tcp)"
     fi
 }
 
@@ -1072,12 +1084,15 @@ cleanup_old_files() {
     
     # Clean up any extra .rules files in audit directory except audit.rules
     if [[ -d "/etc/audit/rules.d" ]]; then
+        # Use nullglob to handle case where no .rules files exist
+        shopt -s nullglob
         for rules_file in /etc/audit/rules.d/*.rules; do
             if [[ -f "$rules_file" ]] && [[ "$rules_file" != "$AUDIT_RULES_FILE" ]]; then
                 backup_file "$rules_file"
                 rm -f "$rules_file" && log "INFO" "Removed extra audit rules file: $rules_file"
             fi
         done
+        shopt -u nullglob
     fi
     
     for file in "${old_files[@]}"; do
