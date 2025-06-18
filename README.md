@@ -11,8 +11,10 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
-- **Comprehensive Audit Rules**: 50+ security monitoring rules covering system administration, network changes, and suspicious activities
+- **Enhanced Audit Rules Management**: Multi-layered audit rules loading with intelligent fallback mechanisms
+- **Direct Audit.Log Monitoring**: Automatic fallback to direct /var/log/audit/audit.log monitoring when audit rules fail
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
+- **RHEL Compatibility**: Enhanced RHEL 7/8 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
 - **Production Ready**: Designed for enterprise environments with proper error handling and recovery
@@ -46,14 +48,19 @@ The script automatically installs required packages:
 
 ### Quick Start
 
-1. **Download the script**:
+1. **Download the latest release**:
    ```bash
+   # Option 1: Clone the repository
    git clone https://github.com/00gxd14g/QRadar_Log_Forwarding.git
    cd QRadar_Log_Forwarding
    chmod +x setup_qradar_logging.sh
+   
+   # Option 2: Download latest release
+   wget https://github.com/00gxd14g/QRadar_Log_Forwarding/releases/latest/download/setup_qradar_logging.sh
+   chmod +x setup_qradar_logging.sh
    ```
 
-2. **Run the setup**:
+2. **Run the enhanced setup**:
    ```bash
    sudo ./setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
    ```
@@ -179,6 +186,28 @@ All configuration files are created with appropriate permissions:
 - Python script: `755` (executable)
 - Log files: `640` (root:root)
 
+## 🔄 Enhanced Reliability Features (v3.1+)
+
+### Multi-Layered Audit Rules Loading
+The script now uses multiple approaches to ensure audit rules are loaded:
+
+1. **Primary Method**: Platform-specific audit rules loading (augenrules/auditctl)
+2. **Fallback Method**: Line-by-line rule loading for problematic systems
+3. **Ultimate Fallback**: Direct audit.log file monitoring via rsyslog
+
+### Direct Audit.Log Monitoring
+When traditional audit rules fail to load, the script automatically configures:
+- **imfile module**: Direct monitoring of `/var/log/audit/audit.log`
+- **Automatic Processing**: EXECVE concatenation works in both modes
+- **Seamless Fallback**: No manual intervention required
+- **Full Functionality**: All audit events are still forwarded to QRadar
+
+### RHEL-Specific Enhancements
+- **RHEL 7**: Automatic audispd-plugins package installation
+- **RHEL 8**: Enhanced service management using service commands
+- **Platform Detection**: Intelligent handling of distribution-specific quirks
+- **Error Recovery**: Comprehensive retry mechanisms
+
 ## 📊 Log Format & Processing
 
 ### Original EXECVE Format
@@ -197,7 +226,14 @@ QRADAR_PROCESSED: type=EXECVE msg=audit(1618834123.456:789): argc=3 cmd="ls -la 
 - **Enhanced Analytics**: Easier to create QRadar rules and searches
 - **Processing Indicator**: `QRADAR_PROCESSED` prefix for tracking
 
-## 🔧 Troubleshooting
+## 🆘 Troubleshooting Guide
+
+For comprehensive troubleshooting, see **[MANUAL_FIXES.md](MANUAL_FIXES.md)** which includes:
+- Platform-specific manual fix procedures
+- RHEL 7/8 specific issues and solutions
+- Service management commands
+- Network connectivity tests
+- Step-by-step recovery procedures
 
 ### Common Issues
 
@@ -302,15 +338,25 @@ sudo systemctl restart auditd rsyslog
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🆘 Support
+## 🆘 Support & Documentation
 
 - **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/00gxd14g/QRadar_Log_Forwarding/issues)
-- **Documentation**: Check the [Wiki](https://github.com/00gxd14g/QRadar_Log_Forwarding/wiki) for additional documentation
+- **Releases**: Download latest versions from [GitHub Releases](https://github.com/00gxd14g/QRadar_Log_Forwarding/releases)
+- **Troubleshooting**: See [MANUAL_FIXES.md](MANUAL_FIXES.md) for comprehensive troubleshooting
+- **Changelog**: View [CHANGELOG.md](CHANGELOG.md) for detailed version history
 - **Security**: Report security vulnerabilities privately to the project maintainer
 
-## 📈 Changelog
+## 📈 Latest Updates
 
-### Version 3.0
+### Version 3.1.0 (Current) ✨
+- **Enhanced Audit Rules Management**: Multi-layered loading with intelligent fallbacks
+- **Direct Audit.Log Monitoring**: Automatic fallback when audit rules fail
+- **RHEL 7/8 Compatibility**: Platform-specific fixes and enhancements
+- **Line-by-Line Rule Loading**: For problematic systems
+- **Comprehensive Error Recovery**: Automatic fallback mechanisms
+- **Enhanced Documentation**: Complete troubleshooting guide
+
+### Version 3.0.0
 - Complete rewrite with unified script
 - Enhanced error handling and logging
 - Comprehensive audit rules (50+ monitoring points)
@@ -319,15 +365,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Support for all major Linux distributions
 - Built-in diagnostic and testing functions
 
-### Version 2.0
+### Version 2.0.0
 - Added command concatenation functionality
 - Improved RHEL support
 - Basic error handling
 
-### Version 1.0
+### Version 1.0.0
 - Initial release
 - Basic audit forwarding
 - Limited distribution support
+
+**Full Changelog**: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
