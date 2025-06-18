@@ -888,16 +888,27 @@ restart_services() {
                 success "Audit rules loaded successfully via auditctl -R"
             else
                 warn "Bulk rule loading failed, trying line-by-line approach..."
-                # Load rules line by line
+                # Load rules line by line with proper escaping
                 local rules_loaded=0
                 local rules_failed=0
                 while IFS= read -r line; do
-                    if [[ "$line" =~ ^-[abwWeDf] ]] && [[ ! "$line" =~ ^#.* ]]; then
-                        if auditctl $line >> "$LOG_FILE" 2>&1; then
+                    # Skip empty lines and comments
+                    if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]] || [[ "$line" =~ ^[[:space:]]*$ ]]; then
+                        continue
+                    fi
+                    
+                    # Only process valid audit rule lines
+                    if [[ "$line" =~ ^[[:space:]]*-[abwWeDf] ]]; then
+                        # Remove leading/trailing whitespace and pass to auditctl
+                        local clean_line
+                        clean_line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        
+                        if eval "auditctl $clean_line" >> "$LOG_FILE" 2>&1; then
                             ((rules_loaded++))
+                            log "INFO" "Successfully loaded rule: $clean_line"
                         else
                             ((rules_failed++))
-                            log "WARN" "Failed to load rule: $line"
+                            log "WARN" "Failed to load rule: $clean_line"
                         fi
                     fi
                 done < "$AUDIT_RULES_FILE"
