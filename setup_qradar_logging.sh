@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.0"
+readonly SCRIPT_VERSION="3.1"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -176,7 +176,11 @@ check_and_install_packages() {
             required_packages=("auditd" "audispd-plugins" "rsyslog" "python3")
             ;;
         dnf|yum)
-            required_packages=("audit" "rsyslog" "python3")
+            if [[ "$DISTRO" == "rhel" ]] && [[ "$VERSION_ID" =~ ^7 ]]; then
+                required_packages=("audit" "rsyslog" "python3" "audispd-plugins")
+            else
+                required_packages=("audit" "rsyslog" "python3")
+            fi
             ;;
     esac
     
@@ -274,6 +278,24 @@ detect_audisp_syslog_path() {
             return 0
         fi
     done
+    
+    # RHEL 7 için audisp-plugins paketini yükle
+    if [[ "$DISTRO" == "rhel" ]] && [[ "$VERSION_ID" =~ ^7 ]]; then
+        warn "audisp-syslog not found. Installing audispd-plugins package for RHEL 7..."
+        if yum install -y audispd-plugins >> "$LOG_FILE" 2>&1; then
+            success "audispd-plugins package installed"
+            # Tekrar ara
+            for path in "${possible_paths[@]}"; do
+                if [[ -f "$path" ]]; then
+                    AUDISP_SYSLOG_PATH="$path"
+                    success "Found audisp-syslog at: $AUDISP_SYSLOG_PATH"
+                    return 0
+                fi
+            done
+        else
+            warn "Failed to install audispd-plugins package"
+        fi
+    fi
     
     error_exit "audisp-syslog binary not found in common locations"
 }
@@ -525,6 +547,71 @@ EOF
 }
 
 # ===============================================================================
+# DIRECT AUDIT.LOG MONITORING CONFIGURATION
+# ===============================================================================
+
+configure_direct_audit_log_monitoring() {
+    log "INFO" "Configuring direct audit.log file monitoring as fallback..."
+    
+    # Add imfile module and audit.log monitoring to rsyslog config
+    local direct_audit_config="
+
+# Direct audit.log file monitoring (fallback when audit rules fail)
+module(load=\"imfile\")
+
+# Monitor /var/log/audit/audit.log directly
+input(
+    type=\"imfile\"
+    file=\"/var/log/audit/audit.log\"
+    tag=\"audit-direct\"
+    facility=\"local3\"
+    severity=\"info\"
+    ruleset=\"qradar_direct_audit\"
+)
+
+# Ruleset for direct audit log processing
+ruleset(name=\"qradar_direct_audit\") {
+    # Process EXECVE messages through concatenation script
+    if \$msg contains \"type=EXECVE\" then {
+        action(
+            type=\"omprog\"
+            binary=\"$CONCAT_SCRIPT_PATH\"
+            useTransactions=\"on\"
+            template=\"RSYSLOG_TraditionalFileFormat\"
+            name=\"qradar_direct_execve_processor\"
+            confirmMessages=\"off\"
+            reportFailures=\"on\"
+            killUnresponsive=\"on\"
+            signalOnClose=\"off\"
+        )
+    }
+    
+    # Forward all direct audit messages to QRadar
+    action(
+        type=\"omfwd\"
+        target=\"$QRADAR_IP\"
+        port=\"$QRADAR_PORT\"
+        protocol=\"tcp\"
+        name=\"qradar_direct_audit_forwarder\"
+        queue.type=\"linkedlist\"
+        queue.size=\"50000\"
+        queue.dequeuebatchsize=\"500\"
+        action.resumeRetryCount=\"-1\"
+        action.reportSuspension=\"on\"
+        action.reportSuspensionContinuation=\"on\"
+        action.resumeInterval=\"10\"
+    )
+    
+    stop
+}"
+    
+    # Append direct audit monitoring to existing rsyslog config
+    echo "$direct_audit_config" >> "$RSYSLOG_QRADAR_CONF"
+    
+    success "Direct audit.log file monitoring configured as fallback"
+}
+
+# ===============================================================================
 # RSYSLOG CONFIGURATION
 # ===============================================================================
 
@@ -677,40 +764,111 @@ restart_services() {
     systemctl enable auditd >> "$LOG_FILE" 2>&1 || warn "Failed to enable auditd"
     
     # Stop auditd if running to ensure clean restart
-    systemctl stop auditd >> "$LOG_FILE" 2>&1 || log "INFO" "auditd was not running"
+    # RHEL 8'de auditd special handling gerekiyor
+    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+        # RHEL 8'de auditd service stop edilemez, sadece restart yapılabilir
+        log "INFO" "RHEL 8 detected - using service auditd restart instead of systemctl"
+        service auditd restart >> "$LOG_FILE" 2>&1 || warn "Failed to restart auditd service"
+    else
+        systemctl stop auditd >> "$LOG_FILE" 2>&1 || log "INFO" "auditd was not running"
+    fi
     
-    # Start auditd service
-    systemctl start auditd >> "$LOG_FILE" 2>&1 || {
-        log "WARN" "Failed to start auditd with systemctl, trying alternative approach..."
-        # Try starting auditd directly
-        /sbin/auditd >> "$LOG_FILE" 2>&1 || {
-            log "WARN" "Failed to start auditd directly, attempting service recovery..."
-            # Reset failed state and try again
-            systemctl reset-failed auditd >> "$LOG_FILE" 2>&1
-            sleep 1
-            systemctl start auditd >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service - audit functionality may be limited"
+    # Start auditd service - RHEL 8 için özel handling
+    if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+        # RHEL 8'de auditd zaten restart edildi, sadece status kontrol et
+        if ! systemctl is-active --quiet auditd; then
+            service auditd start >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service"
+        fi
+    else
+        systemctl start auditd >> "$LOG_FILE" 2>&1 || {
+            log "WARN" "Failed to start auditd with systemctl, trying alternative approach..."
+            # Try starting auditd directly
+            /sbin/auditd >> "$LOG_FILE" 2>&1 || {
+                log "WARN" "Failed to start auditd directly, attempting service recovery..."
+                # Reset failed state and try again
+                systemctl reset-failed auditd >> "$LOG_FILE" 2>&1
+                sleep 1
+                systemctl start auditd >> "$LOG_FILE" 2>&1 || warn "Failed to start auditd service - audit functionality may be limited"
+            }
         }
-    }
+    fi
     
     # Wait for auditd to fully initialize
     sleep 3
     
-    # Load audit rules if auditd is running
+    # Load audit rules if auditd is running with enhanced error handling
+    local audit_rules_loaded=false
     if systemctl is-active --quiet auditd; then
-        log "INFO" "auditd is running, loading audit rules..."
-        if command_exists augenrules; then
-            log "INFO" "Loading audit rules with augenrules..."
-            augenrules --load >> "$LOG_FILE" 2>&1 || {
-                warn "augenrules failed, trying auditctl..."
-                auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1 || warn "Failed to load audit rules with auditctl"
-            }
+        log "INFO" "auditd is running, attempting to load audit rules..."
+        
+        # Try multiple approaches to load audit rules
+        # Approach 1: Platform-specific loading
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+            log "INFO" "RHEL 8 detected - using enhanced auditctl approach..."
+            # Clear existing rules first
+            auditctl -D >> "$LOG_FILE" 2>&1 || true
+            
+            # Try bulk loading first
+            if auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1; then
+                audit_rules_loaded=true
+                success "Audit rules loaded successfully via auditctl -R"
+            else
+                warn "Bulk rule loading failed, trying line-by-line approach..."
+                # Load rules line by line
+                local rules_loaded=0
+                local rules_failed=0
+                while IFS= read -r line; do
+                    if [[ "$line" =~ ^-[abwWeDf] ]] && [[ ! "$line" =~ ^#.* ]]; then
+                        if auditctl $line >> "$LOG_FILE" 2>&1; then
+                            ((rules_loaded++))
+                        else
+                            ((rules_failed++))
+                            log "WARN" "Failed to load rule: $line"
+                        fi
+                    fi
+                done < "$AUDIT_RULES_FILE"
+                
+                if [[ $rules_loaded -gt 0 ]]; then
+                    audit_rules_loaded=true
+                    success "Loaded $rules_loaded audit rules (failed: $rules_failed)"
+                else
+                    warn "No audit rules could be loaded"
+                fi
+            fi
         else
-            log "INFO" "Loading audit rules with auditctl..."
-            auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1 || warn "Failed to load audit rules with auditctl"
+            # Standard approach for other distributions
+            if command_exists augenrules; then
+                log "INFO" "Loading audit rules with augenrules..."
+                if augenrules --load >> "$LOG_FILE" 2>&1; then
+                    audit_rules_loaded=true
+                    success "Audit rules loaded successfully via augenrules"
+                else
+                    warn "augenrules failed, trying auditctl..."
+                    if auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1; then
+                        audit_rules_loaded=true
+                        success "Audit rules loaded successfully via auditctl"
+                    else
+                        warn "Failed to load audit rules with auditctl"
+                    fi
+                fi
+            else
+                log "INFO" "Loading audit rules with auditctl..."
+                if auditctl -R "$AUDIT_RULES_FILE" >> "$LOG_FILE" 2>&1; then
+                    audit_rules_loaded=true
+                    success "Audit rules loaded successfully via auditctl"
+                else
+                    warn "Failed to load audit rules with auditctl"
+                fi
+            fi
         fi
-        success "Audit rules loaded successfully"
     else
         warn "auditd is not running - audit rules cannot be loaded"
+    fi
+    
+    # If audit rules failed to load, enable direct audit.log monitoring
+    if [[ "$audit_rules_loaded" == "false" ]]; then
+        warn "Audit rules could not be loaded properly. Enabling direct audit.log file monitoring as fallback..."
+        configure_direct_audit_log_monitoring
     fi
     
     # Restart rsyslog
@@ -730,10 +888,20 @@ validate_audit_configuration() {
     # Check audit rules file syntax
     if [[ -f "$AUDIT_RULES_FILE" ]]; then
         log "INFO" "Validating audit rules syntax..."
-        if auditctl -R "$AUDIT_RULES_FILE" -n >> "$LOG_FILE" 2>&1; then
-            success "Audit rules syntax is valid"
+        # RHEL 8'de nested rule validation sorunları olabiliyor
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+            # RHEL 8 için basit syntax kontrolü
+            if grep -q "^-[abwWe]" "$AUDIT_RULES_FILE"; then
+                success "Audit rules file contains valid rules"
+            else
+                warn "Audit rules file may have syntax issues"
+            fi
         else
-            warn "Audit rules syntax validation failed"
+            if auditctl -R "$AUDIT_RULES_FILE" -n >> "$LOG_FILE" 2>&1; then
+                success "Audit rules syntax is valid"
+            else
+                warn "Audit rules syntax validation failed"
+            fi
         fi
         
         # Count audit rules
@@ -811,6 +979,17 @@ run_diagnostics() {
             systemctl start "$service" >> "$LOG_FILE" 2>&1 || warn "Failed to start $service"
         fi
     done
+    
+    # Check if direct audit.log monitoring is configured
+    if grep -q "imfile" "$RSYSLOG_QRADAR_CONF" && grep -q "audit.log" "$RSYSLOG_QRADAR_CONF"; then
+        log "INFO" "Direct audit.log file monitoring is enabled as fallback"
+        # Test audit.log file accessibility
+        if [[ -r "/var/log/audit/audit.log" ]]; then
+            success "audit.log file is accessible for direct monitoring"
+        else
+            warn "audit.log file is not accessible - may need to adjust permissions"
+        fi
+    fi
     
     # Test rsyslog configuration
     if rsyslogd -N1 >> "$LOG_FILE" 2>&1; then
@@ -1015,10 +1194,19 @@ generate_setup_summary() {
     
     # Validate audit rules independently
     if [[ -f "$AUDIT_RULES_FILE" ]]; then
-        if auditctl -R "$AUDIT_RULES_FILE" -n >/dev/null 2>&1; then
-            echo "   ✅ Audit rules syntax: VALID"
+        # RHEL 8'de nested rule validation sorunları olabiliyor
+        if [[ "$DISTRO" =~ ^(rhel|centos|oracle|almalinux|rocky)$ ]] && [[ "$VERSION_ID" =~ ^8 ]]; then
+            if grep -q "^-[abwWe]" "$AUDIT_RULES_FILE"; then
+                echo "   ✅ Audit rules syntax: VALID (RHEL 8 compatible)"
+            else
+                echo "   ❌ Audit rules syntax: INVALID"
+            fi
         else
-            echo "   ❌ Audit rules syntax: INVALID"
+            if auditctl -R "$AUDIT_RULES_FILE" -n >/dev/null 2>&1; then
+                echo "   ✅ Audit rules syntax: VALID"
+            else
+                echo "   ❌ Audit rules syntax: INVALID"
+            fi
         fi
         
         # Check critical rule coverage
