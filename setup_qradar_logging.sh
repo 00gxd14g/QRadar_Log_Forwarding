@@ -24,7 +24,7 @@
 # Usage: sudo bash setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
 #
 # Author: QRadar Log Forwarding Project
-# Version: 3.1.4
+# Version: 3.2.0
 # ===============================================================================
 
 set -euo pipefail
@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.1.4"
+readonly SCRIPT_VERSION="3.2.0"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -619,6 +619,7 @@ configure_rsyslog() {
 
 # Load required modules
 module(load="omprog")
+module(load="imfile")
 
 # Block noisy kernel messages to reduce volume
 if \$syslogfacility-text == "kern" then {
@@ -637,6 +638,34 @@ if \$msg contains "NetworkManager" or \$msg contains "dhclient" or \$msg contain
 
 # Block non-security related cron messages
 if \$msg contains "CROND" and not (\$msg contains "FAILED" or \$msg contains "ERROR" or \$msg contains "denied") then {
+    stop
+}
+
+# Monitor /var/log/messages for critical events
+input(
+    type="imfile"
+    file="/var/log/messages"
+    tag="messages-monitor"
+    facility="local4"
+    severity="info"
+    ruleset="qradar_messages"
+)
+
+# Ruleset for /var/log/messages processing
+ruleset(name="qradar_messages") {
+    # Filter for critical security events from messages
+    if \$msg contains "FAILED" or \$msg contains "ERROR" or \$msg contains "denied" or \$msg contains "unauthorized" or \$msg contains "authentication" or \$msg contains "security" or \$msg contains "violation" or \$msg contains "breach" or \$msg contains "intrusion" or \$msg contains "attack" or \$msg contains "malware" or \$msg contains "virus" then {
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            name="qradar_messages_forwarder"
+            queue.type="linkedlist"
+            queue.size="10000"
+            action.resumeRetryCount="-1"
+        )
+    }
     stop
 }
 
@@ -672,6 +701,9 @@ if \$syslogfacility-text == "local3" then {
         action.reportSuspensionContinuation="on"
         action.resumeInterval="10"
     )
+    
+    # Also write to local syslog for testing (copy message before forwarding)
+    action(type="omfile" file="$SYSLOG_FILE")
     
     # Stop processing after forwarding to QRadar
     stop
@@ -1040,15 +1072,24 @@ run_diagnostics() {
         error_exit "Rsyslog configuration has errors"
     fi
     
-    # Test local syslog
+    # Test local syslog (use user facility instead of local3 which is forwarded to QRadar)
     local test_message="QRadar setup test message $(date '+%Y-%m-%d %H:%M:%S')"
-    logger -p local3.info "$test_message"
-    sleep 2
+    logger -p user.info "$test_message"
+    sleep 3
     
     if grep -q "$test_message" "$SYSLOG_FILE"; then
         success "Local syslog test passed"
     else
-        warn "Local syslog test failed - message not found in $SYSLOG_FILE"
+        # Try alternative test with direct rsyslog test
+        local rsyslog_test_message="QRadar rsyslog test $(date '+%Y%m%d%H%M%S')"
+        echo "$rsyslog_test_message" | logger -p user.info
+        sleep 2
+        if grep -q "$rsyslog_test_message" "$SYSLOG_FILE"; then
+            success "Local syslog test passed (alternative method)"
+        else
+            warn "Local syslog test failed - message not found in $SYSLOG_FILE"
+            log "INFO" "This may be normal if syslog is configured differently"
+        fi
     fi
     
     # Test audit functionality

@@ -54,6 +54,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - T1548 - Abuse Elevation Control Mechanism
 - And many more...
 
+## [3.2.0] - 2025-06-18
+
+### Major Features Added
+- **Direct /var/log/messages Monitoring**: Added imfile-based monitoring of /var/log/messages for critical security events
+- **Critical Log Detection**: Intelligent filtering of security-relevant events from system logs
+- **Enhanced Local Syslog Test**: Fixed local syslog test failure by using user facility instead of local3
+- **Dual Log Source Support**: Now monitors both auditd and system messages simultaneously
+
+### Enhanced Security Coverage
+- **Security Event Patterns**: Monitors for FAILED, ERROR, denied, unauthorized, authentication events
+- **Security Keywords**: Detects security, violation, breach, intrusion, attack, malware, virus patterns
+- **Critical System Events**: Forwards only security-relevant events from /var/log/messages
+- **Comprehensive Coverage**: Both audit logs and system security events forwarded
+
+### Fixed Issues
+- **Local Syslog Test**: Fixed \"Local syslog test failed - message not found\" error
+- **Messages Forwarding**: Implemented missing /var/log/messages critical log forwarding
+- **Test Reliability**: Enhanced syslog testing with alternative methods and better error handling
+
+### Technical Improvements
+- **imfile Module**: Added rsyslog imfile module for direct file monitoring
+- **Ruleset Design**: Separate ruleset for messages processing (qradar_messages)
+- **Local Copy**: local3 logs now also written to local syslog before forwarding
+- **Enhanced Filtering**: Pattern-based security event detection from system logs
+
 ## [3.1.4] - 2025-06-18
 
 ### Added
