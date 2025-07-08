@@ -11,9 +11,12 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
+- **LEEF v2 Format Support**: IBM QRadar optimized Log Event Extended Format v2.0 with standardized field mapping
 - **Enhanced Audit Rules Management**: Multi-layered audit rules loading with intelligent fallback mechanisms
 - **Direct Audit.Log Monitoring**: Automatic fallback to direct /var/log/audit/audit.log monitoring when audit rules fail
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
+- **EPS Optimization**: Minimal audit rules focusing on 5 critical security categories for reduced event volume
+- **TLS Encryption Support**: Secure log transmission with TLS encryption on port 6514
 - **RHEL Compatibility**: Enhanced RHEL 7/8 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
@@ -346,9 +349,61 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Changelog**: View [CHANGELOG.md](CHANGELOG.md) for detailed version history
 - **Security**: Report security vulnerabilities privately to the project maintainer
 
+## 🔧 LEEF v2 Optimization Features (v4.1.0+)
+
+### QRadar LEEF v2 Optimizer
+A specialized script for optimizing existing QRadar installations with IBM best practices:
+
+```bash
+# Enable LEEF v2 format with minimal audit rules
+sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 514 --minimal
+
+# Enable LEEF v2 with TLS encryption
+sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 6514 --tls
+
+# Full optimization (LEEF v2 + TLS + minimal rules)
+sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 6514 --tls --minimal
+```
+
+### LEEF v2 Benefits
+- **Standardized Field Mapping**: Consistent audit field extraction across all events
+- **Single-Field Command Reconstruction**: Complete command lines in one field for easier parsing
+- **QRadar DSM Optimization**: Optimized for IBM QRadar parsing efficiency
+- **Reduced Processing Overhead**: Structured format reduces QRadar parsing load
+- **Enhanced Analytics**: Better correlation and threat hunting capabilities
+
+### EPS Optimization Categories
+The minimal audit rules focus on 5 critical security categories:
+
+1. **Process Execution Monitoring**: User and root command execution
+2. **Authentication & Privilege Escalation**: Authentication events, sudo, su usage
+3. **Critical File Access**: Identity files, sudoers, authentication configs
+4. **Service State Monitoring**: systemctl, service control commands
+5. **System Shutdown/Reboot**: System state change tracking
+
+### Expected Performance Improvements
+- **70-80% EPS Reduction**: Compared to default comprehensive audit rules
+- **Faster QRadar Processing**: LEEF v2 format reduces parsing overhead
+- **Better Resource Utilization**: Focused monitoring reduces system impact
+- **Enhanced Threat Detection**: Quality over quantity approach
+
 ## 📈 Latest Updates
 
-### Version 3.1.0 (Current) ✨
+### Version 4.1.0 (Current) ✨
+- **LEEF v2 Format Support**: Complete IBM QRadar LEEF v2 implementation
+- **EPS Optimization**: Minimal audit rules for enterprise environments
+- **TLS Encryption Support**: Secure log transmission capabilities
+- **QRadar LEEF Optimizer**: Dedicated optimization script for existing installations
+- **Advanced Field Extraction**: Regex-based audit field parsing
+- **Dual Format Output**: Backward compatibility with traditional and LEEF formats
+
+### Version 4.0.0
+- **Universal Installer Architecture**: Complete restructure with distribution-specific installers
+- **Enhanced Security**: Removed eval usage and implemented secure command execution
+- **Turkish Documentation**: Complete localization with troubleshooting guides
+- **GitHub Release Management**: Automated release creation and distribution archives
+
+### Version 3.1.0
 - **Enhanced Audit Rules Management**: Multi-layered loading with intelligent fallbacks
 - **Direct Audit.Log Monitoring**: Automatic fallback when audit rules fail
 - **RHEL 7/8 Compatibility**: Platform-specific fixes and enhancements
