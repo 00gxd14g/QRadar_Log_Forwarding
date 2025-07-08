@@ -34,7 +34,7 @@ set -euo pipefail
 # ===============================================================================
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="3.2.5"
+readonly SCRIPT_VERSION="3.2.6"
 readonly LOG_FILE="/var/log/qradar_setup.log"
 readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 
@@ -311,16 +311,115 @@ command arguments into a single field for better SIEM parsing.
 import sys
 import re
 import json
+import pwd
+import grp
 from datetime import datetime
 
+def get_username_from_uid(uid_str):
+    """Convert UID to username"""
+    try:
+        uid = int(uid_str)
+        if uid == 4294967295:  # -1 in unsigned 32-bit (unset)
+            return "unset"
+        username = pwd.getpwuid(uid).pw_name
+        return username
+    except (ValueError, KeyError, OSError):
+        return f"uid_{uid_str}"
+
+def get_groupname_from_gid(gid_str):
+    """Convert GID to group name"""
+    try:
+        gid = int(gid_str)
+        if gid == 4294967295:  # -1 in unsigned 32-bit (unset)
+            return "unset"
+        groupname = grp.getgrgid(gid).gr_name
+        return groupname
+    except (ValueError, KeyError, OSError):
+        return f"gid_{gid_str}"
+
+def extract_user_info(line):
+    """Extract user information from audit line"""
+    user_info = {}
+    
+    # Extract auid (audit user ID - the original user who logged in)
+    auid_match = re.search(r'auid=(\d+)', line)
+    if auid_match:
+        auid = auid_match.group(1)
+        user_info['auid'] = auid
+        user_info['audit_user'] = get_username_from_uid(auid)
+    
+    # Extract uid (current user ID)
+    uid_match = re.search(r'\buid=(\d+)', line)
+    if uid_match:
+        uid = uid_match.group(1)
+        user_info['uid'] = uid
+        user_info['user'] = get_username_from_uid(uid)
+    
+    # Extract euid (effective user ID)
+    euid_match = re.search(r'euid=(\d+)', line)
+    if euid_match:
+        euid = euid_match.group(1)
+        user_info['euid'] = euid
+        user_info['effective_user'] = get_username_from_uid(euid)
+    
+    # Extract gid (group ID)
+    gid_match = re.search(r'\bgid=(\d+)', line)
+    if gid_match:
+        gid = gid_match.group(1)
+        user_info['gid'] = gid
+        user_info['group'] = get_groupname_from_gid(gid)
+    
+    return user_info
+
+def enrich_audit_line(line):
+    """Enrich any audit line with user information"""
+    # Skip if not an audit line
+    if "type=" not in line:
+        return line
+    
+    # Extract user information for enrichment
+    user_info = extract_user_info(line)
+    
+    # Build enrichment fields
+    enrichment_fields = []
+    
+    # Add user enrichment fields
+    if 'audit_user' in user_info and user_info['audit_user'] != 'unset':
+        enrichment_fields.append(f'audit_user="{user_info["audit_user"]}"')
+    
+    if 'user' in user_info and user_info['user'] != 'unset':
+        enrichment_fields.append(f'current_user="{user_info["user"]}"')
+    
+    if 'effective_user' in user_info and user_info['effective_user'] != 'unset':
+        # Only add if different from current_user to avoid redundancy
+        if 'user' not in user_info or user_info['effective_user'] != user_info['user']:
+            enrichment_fields.append(f'effective_user="{user_info["effective_user"]}"')
+    
+    if 'group' in user_info and user_info['group'] != 'unset':
+        enrichment_fields.append(f'group="{user_info["group"]}"')
+    
+    # Add enrichment fields to the line if any exist
+    if enrichment_fields:
+        if not line.endswith(' '):
+            line += ' '
+        line += ' '.join(enrichment_fields)
+    
+    return line
+
 def process_execve_line(line):
-    """Process EXECVE audit log line and concatenate arguments."""
+    """Process EXECVE audit log line, concatenate arguments and enrich with user info."""
     if "type=EXECVE" not in line:
+        # For non-EXECVE audit lines, just enrich with user info
+        if "type=" in line:
+            return enrich_audit_line(line)
         return line
     
     # Skip lines with proctitle or other unwanted fields
     if "proctitle=" in line or "PROCTITLE" in line:
         return None  # Return None to skip this line entirely
+    
+    # Extract user information for enrichment
+    user_info = extract_user_info(line)
     
     # Extract all argument fields: a0="...", a1="...", etc.
     args_pattern = r'a(\d+)="([^"]*)"'
@@ -351,7 +450,26 @@ def process_execve_line(line):
     if cleaned_line and not cleaned_line.endswith(' '):
         cleaned_line += ' '
     
-    processed_line = f"{cleaned_line}cmd=\"{combined_command}\""
+    # Build enriched line with user information
+    enriched_fields = []
+    enriched_fields.append(f'cmd="{combined_command}"')
+    
+    # Add user enrichment fields
+    if 'audit_user' in user_info and user_info['audit_user'] != 'unset':
+        enriched_fields.append(f'audit_user="{user_info["audit_user"]}"')
+    
+    if 'user' in user_info and user_info['user'] != 'unset':
+        enriched_fields.append(f'current_user="{user_info["user"]}"')
+    
+    if 'effective_user' in user_info and user_info['effective_user'] != 'unset':
+        # Only add if different from current_user to avoid redundancy
+        if 'user' not in user_info or user_info['effective_user'] != user_info['user']:
+            enriched_fields.append(f'effective_user="{user_info["effective_user"]}"')
+    
+    if 'group' in user_info and user_info['group'] != 'unset':
+        enriched_fields.append(f'group="{user_info["group"]}"')
+    
+    processed_line = f"{cleaned_line}{' '.join(enriched_fields)}"
     
     return processed_line
 
@@ -426,7 +544,7 @@ configure_auditd() {
     log "INFO" "Generating universal audit rules optimized for bulk loading..."
     cat > "$AUDIT_RULES_FILE" << 'EOF'
 # QRadar Production Audit Rules - Universal Compatible
-# Generated by QRadar Log Forwarding Setup Script v3.2.5
+# Generated by QRadar Log Forwarding Setup Script v3.2.6
 # Optimized for successful bulk loading on all platforms
 
 ## Delete all current rules and reset
