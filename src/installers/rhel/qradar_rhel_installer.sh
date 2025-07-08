@@ -164,6 +164,15 @@ detect_rhel_family() {
     # shellcheck source=/etc/os-release
     source /etc/os-release
     
+    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    if [[ -z "${ID:-}" ]]; then
+        error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
+    if [[ -z "${PRETTY_NAME:-}" ]]; then
+        error_exit "PRETTY_NAME değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
     DISTRO_ID="$ID"
     DISTRO_NAME="$PRETTY_NAME"
     
@@ -187,6 +196,15 @@ detect_rhel_family() {
         VERSION_MAJOR="8"
         VERSION_MINOR="0"
         warn "VERSION_ID bulunamadı, varsayılan değer kullanılıyor: $VERSION_MAJOR.$VERSION_MINOR"
+    fi
+    
+    # Version değerlerini kontrol et
+    if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (VERSION_ID: $VERSION_ID)"
+    fi
+    
+    if [[ -z "$VERSION_MINOR" ]] || [[ ! "$VERSION_MINOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MINOR değeri geçersiz: '$VERSION_MINOR' (VERSION_ID: $VERSION_ID)"
     fi
     
     # RHEL 7+ kontrolü

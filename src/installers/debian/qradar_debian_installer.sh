@@ -163,6 +163,19 @@ detect_debian_version() {
     # shellcheck source=/etc/os-release
     source /etc/os-release
     
+    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    if [[ -z "${ID:-}" ]]; then
+        error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
+    if [[ -z "${VERSION_ID:-}" ]]; then
+        error_exit "VERSION_ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
+    if [[ -z "${VERSION_CODENAME:-}" ]]; then
+        error_exit "VERSION_CODENAME değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
     # Debian veya Kali kontrolü
     if [[ "$ID" == "debian" ]]; then
         DEBIAN_VERSION="$VERSION_ID"
@@ -180,6 +193,9 @@ detect_debian_version() {
     # Debian 9+ kontrolü (Kali hariç)
     if [[ "$IS_KALI" == false ]]; then
         VERSION_MAJOR="${DEBIAN_VERSION%%.*}"
+        if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
+            error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (DEBIAN_VERSION: $DEBIAN_VERSION)"
+        fi
         if [[ $VERSION_MAJOR -lt 9 ]]; then
             error_exit "Bu script Debian 9+ sürümlerini destekler. Mevcut sürüm: $DEBIAN_VERSION"
         fi

@@ -163,6 +163,19 @@ detect_ubuntu_version() {
     # shellcheck source=/etc/os-release
     source /etc/os-release
     
+    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    if [[ -z "${ID:-}" ]]; then
+        error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
+    if [[ -z "${VERSION_ID:-}" ]]; then
+        error_exit "VERSION_ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
+    if [[ -z "${VERSION_CODENAME:-}" ]]; then
+        error_exit "VERSION_CODENAME değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
+    
     if [[ "$ID" != "ubuntu" ]]; then
         error_exit "Bu script sadece Ubuntu sistemler için tasarlanmıştır. Tespit edilen: $ID"
     fi
@@ -172,6 +185,15 @@ detect_ubuntu_version() {
     
     # Sürüm numarasını parçala
     IFS='.' read -r VERSION_MAJOR VERSION_MINOR <<< "$UBUNTU_VERSION"
+    
+    # Version değerlerini kontrol et
+    if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
+    fi
+    
+    if [[ -z "$VERSION_MINOR" ]] || [[ ! "$VERSION_MINOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MINOR değeri geçersiz: '$VERSION_MINOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
+    fi
     
     # Ubuntu 16.04+ kontrolü
     if [[ $VERSION_MAJOR -lt 16 ]] || [[ $VERSION_MAJOR -eq 16 && $VERSION_MINOR -lt 4 ]]; then
