@@ -45,7 +45,6 @@ readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 # Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
 readonly AUDISP_PLUGINS_DIR="/etc/audisp/plugins.d"
-readonly AUDISP_SYSLOG_CONF="/etc/audisp/plugins.d/syslog.conf"
 readonly AUDIT_PLUGINS_DIR="/etc/audit/plugins.d"
 readonly AUDIT_SYSLOG_CONF="/etc/audit/plugins.d/syslog.conf"
 readonly RSYSLOG_QRADAR_CONF="/etc/rsyslog.d/99-qradar.conf"
@@ -57,6 +56,7 @@ UBUNTU_CODENAME=""
 VERSION_MAJOR=""
 VERSION_MINOR=""
 AUDISP_METHOD=""
+AUDISP_SYSLOG_CONF=""
 SYSLOG_FILE="/var/log/syslog"
 
 # Script parametreleri
