@@ -37,7 +37,6 @@ readonly RSYSLOG_LEEF_CONF="/etc/rsyslog.d/40-qradar-leef.conf"
 readonly TLS_CERT_DIR="/etc/ssl/qradar"
 
 # Options
-USE_TLS=false
 USE_MINIMAL_RULES=false
 QRADAR_IP=""
 QRADAR_PORT="514"
@@ -187,76 +186,60 @@ EOF
 # ===============================================================================
 
 create_leef_rsyslog_config() {
-    log "INFO" "Creating LEEF v2 rsyslog configuration..."
+    log "INFO" "Creating dual format rsyslog configuration (LEEF v2 + Traditional)..."
     
     backup_file "$RSYSLOG_LEEF_CONF"
     
-    # Determine if TLS should be used
-    local tls_config=""
-    local target_config=""
+    # Dual format configuration - always non-TLS
+    local leef_target_config="action(
+        type=\"omfwd\"
+        target=\"$QRADAR_IP\"
+        port=\"$QRADAR_PORT\"
+        protocol=\"tcp\"
+        template=\"LEEFv2Audit\"
+        queue.type=\"LinkedList\"
+        queue.filename=\"qradar-leef-fwd\"
+        queue.maxdiskspace=\"500m\"
+        action.resumeRetryCount=\"-1\"
+        action.reportSuspension=\"on\"
+    )"
     
-    if [[ "$USE_TLS" == true ]]; then
-        tls_config='
-# TLS Configuration
-global(
-    DefaultNetstreamDriverCAFile="/etc/ssl/certs/ca-certificates.crt"
-    DefaultNetstreamDriverCertFile="/etc/ssl/qradar/rsyslog-cert.pem"
-    DefaultNetstreamDriverKeyFile="/etc/ssl/qradar/rsyslog-key.pem"
-    DefaultNetstreamDriver="gtls"
-)'
-        target_config="action(
-            type=\"omfwd\"
-            target=\"$QRADAR_IP\"
-            port=\"$QRADAR_PORT\"
-            protocol=\"tcp\"
-            StreamDriver=\"gtls\"
-            StreamDriverMode=\"1\"
-            StreamDriverAuthMode=\"x509/name\"
-            StreamDriverPermittedPeer=\"$QRADAR_IP\"
-            compression.mode=\"single\"
-            template=\"LEEFv2Audit\"
-            queue.type=\"LinkedList\"
-            queue.filename=\"qradar-leef-fwd\"
-            queue.maxdiskspace=\"500m\"
-            action.resumeRetryCount=\"-1\"
-            action.reportSuspension=\"on\"
-        )"
-    else
-        target_config="action(
-            type=\"omfwd\"
-            target=\"$QRADAR_IP\"
-            port=\"$QRADAR_PORT\"
-            protocol=\"tcp\"
-            template=\"LEEFv2Audit\"
-            queue.type=\"LinkedList\"
-            queue.filename=\"qradar-leef-fwd\"
-            queue.maxdiskspace=\"500m\"
-            action.resumeRetryCount=\"-1\"
-            action.reportSuspension=\"on\"
-        )"
-    fi
+    local traditional_target_config="action(
+        type=\"omfwd\"
+        target=\"$QRADAR_IP\"
+        port=\"$QRADAR_PORT\"
+        protocol=\"tcp\"
+        template=\"TraditionalAudit\"
+        queue.type=\"LinkedList\"
+        queue.filename=\"qradar-traditional-fwd\"
+        queue.maxdiskspace=\"500m\"
+        action.resumeRetryCount=\"-1\"
+        action.reportSuspension=\"on\"
+    )"
     
     cat > "$RSYSLOG_LEEF_CONF" << EOF
-# QRadar LEEF v2 Rsyslog Configuration
-# Optimized for IBM QRadar SIEM integration
+# QRadar Dual Format Rsyslog Configuration
+# LEEF v2 + Traditional Format Support (Non-TLS)
 # Version: 4.1.0
 
 module(load="imfile")
 module(load="mmjsonparse")
-
-$tls_config
 
 # Rate limiting for EPS control
 \$SystemLogRateLimitInterval 2
 \$SystemLogRateLimitBurst 100
 
 ##############################################################################
-# LEEF v2 TEMPLATES FOR QRADAR INTEGRATION
+# DUAL FORMAT TEMPLATES FOR QRADAR INTEGRATION
 ##############################################################################
 
 # LEEF v2 template for audit events with command reconstruction
 template(name="LEEFv2Audit" type="string" 
          string="LEEF:2.0|Linux|auditd|2024.1|%\$.audit_type%|^|devTime=%timereported:::date-rfc3339%^src=%hostname%^auid=%\$.auid%^uid=%\$.uid%^euid=%\$.euid%^pid=%\$.pid%^exe=%\$.exe%^cmd=%\$.full_command%^success=%\$.success%^key=%\$.key%^msg=%rawmsg%\\n")
+
+# Traditional format template (compatible with existing QRadar configs)
+template(name="TraditionalAudit" type="string"
+         string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
 # LEEF v2 template for authentication events  
 template(name="LEEFv2Auth" type="string"
@@ -309,8 +292,9 @@ ruleset(name="auditd_leef_processing") {
             set \$.full_command = "N/A";
         }
         
-        # Forward to QRadar with LEEF v2 format
-        $target_config
+        # Forward to QRadar with dual format (LEEF v2 + Traditional)
+        $leef_target_config
+        $traditional_target_config
     }
 }
 
@@ -348,9 +332,10 @@ ruleset(name="auth_leef_processing") {
     if \$msg contains "ssh" then set \$.method = "ssh";
     if \$msg contains "su:" then set \$.method = "su";
     
-    # Forward critical auth events only
+    # Forward critical auth events with dual format
     if \$.result != "unknown" then {
-        $target_config
+        $leef_target_config
+        $traditional_target_config
     }
 }
 
@@ -373,50 +358,13 @@ EOF
     success "LEEF v2 rsyslog configuration created"
 }
 
-# ===============================================================================
-# TLS CERTIFICATE MANAGEMENT
-# ===============================================================================
-
-setup_tls_certificates() {
-    if [[ "$USE_TLS" != true ]]; then
-        return 0
-    fi
-    
-    log "INFO" "Setting up TLS certificates for secure QRadar communication..."
-    
-    mkdir -p "$TLS_CERT_DIR"
-    
-    # Check if certificates already exist
-    if [[ -f "$TLS_CERT_DIR/rsyslog-cert.pem" ]]; then
-        log "INFO" "TLS certificates already exist, skipping generation"
-        return 0
-    fi
-    
-    # Generate self-signed certificate for testing
-    log "INFO" "Generating self-signed certificate for TLS testing..."
-    
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$TLS_CERT_DIR/rsyslog-key.pem" \
-        -out "$TLS_CERT_DIR/rsyslog-cert.pem" \
-        -subj "/C=TR/ST=Istanbul/L=Istanbul/O=QRadar/OU=LogForwarding/CN=$QRADAR_IP" \
-        2>/dev/null || {
-            warn "Failed to generate certificates, TLS will be disabled"
-            USE_TLS=false
-            return 1
-        }
-    
-    chmod 600 "$TLS_CERT_DIR/rsyslog-key.pem"
-    chmod 644 "$TLS_CERT_DIR/rsyslog-cert.pem"
-    
-    success "TLS certificates generated for secure communication"
-}
 
 # ===============================================================================
 # SERVICE MANAGEMENT AND OPTIMIZATION
 # ===============================================================================
 
 optimize_services() {
-    log "INFO" "Optimizing services for LEEF v2 configuration..."
+    log "INFO" "Optimizing services for dual format configuration..."
     
     # Load minimal audit rules if specified
     if [[ "$USE_MINIMAL_RULES" == true ]]; then
@@ -443,8 +391,8 @@ optimize_services() {
         systemctl start auditd || error_exit "Failed to start auditd"
     fi
     
-    # Restart rsyslog with LEEF configuration
-    log "INFO" "Restarting rsyslog with LEEF v2 configuration..."
+    # Restart rsyslog with dual format configuration
+    log "INFO" "Restarting rsyslog with dual format configuration..."
     
     # Validate rsyslog configuration
     if rsyslogd -N1 2>/dev/null; then
@@ -455,7 +403,7 @@ optimize_services() {
     
     systemctl restart rsyslog || error_exit "Failed to restart rsyslog"
     
-    success "Services optimized for LEEF v2"
+    success "Services optimized for dual format output"
 }
 
 # ===============================================================================
@@ -505,43 +453,44 @@ run_leef_tests() {
 # ===============================================================================
 
 generate_eps_report() {
-    log "INFO" "Generating EPS (Events Per Second) analysis report..."
+    log "INFO" "Generating dual format optimization report..."
     
     echo ""
     echo "============================================================="
-    echo "             QRadar LEEF v2 Optimization Report"
+    echo "             QRadar Dual Format Optimization Report"
     echo "============================================================="
     echo ""
     echo "📊 CONFIGURATION SUMMARY:"
     echo "   • QRadar Target: $QRADAR_IP:$QRADAR_PORT"
-    echo "   • TLS Enabled: $USE_TLS"
+    echo "   • Format: Dual (LEEF v2.0 + Traditional)"
+    echo "   • Transmission: Non-TLS TCP"
     echo "   • Minimal Rules: $USE_MINIMAL_RULES"
-    echo "   • LEEF Format: v2.0"
     echo ""
     echo "🎯 OPTIMIZATION FEATURES:"
+    echo "   • Dual format output (LEEF v2 + Traditional)"
     echo "   • Single-field command reconstruction"
     echo "   • EPS optimized audit rules (5 categories)"
     echo "   • Advanced noise reduction"
     echo "   • QRadar DSM field mapping"
-    if [[ "$USE_TLS" == true ]]; then
-        echo "   • TLS encrypted transmission"
-    fi
+    echo "   • Backward compatibility maintained"
     echo ""
-    echo "📈 EXPECTED EPS REDUCTION:"
-    echo "   • Estimated 70-80% EPS reduction vs default configuration"
-    echo "   • Focused on 5 critical security categories"
-    echo "   • Optimized for QRadar parsing efficiency"
+    echo "📈 EXPECTED BENEFITS:"
+    echo "   • 70-80% EPS reduction vs default configuration"
+    echo "   • Enhanced QRadar parsing with LEEF v2"
+    echo "   • Traditional format for existing rules"
+    echo "   • Optimized for QRadar analytics"
     echo ""
     echo "🔍 MONITORING COMMANDS:"
     echo "   • EPS Check: ausearch --start today | wc -l"
     echo "   • Real-time: tail -f /var/log/audit/audit.log"
     echo "   • Network: tcpdump -i any host $QRADAR_IP and port $QRADAR_PORT"
     echo "   • LEEF Test: logger -t test 'LEEF:2.0|Test|System|1.0|Test|^|msg=test'"
+    echo "   • Traditional Test: logger -p local3.info 'Traditional format test'"
     echo ""
     echo "============================================================="
     echo ""
     
-    success "EPS analysis report generated"
+    success "Dual format optimization report generated"
 }
 
 # ===============================================================================
@@ -571,10 +520,6 @@ main() {
         create_minimal_audit_rules
     fi
     
-    if [[ "$USE_TLS" == true ]]; then
-        setup_tls_certificates
-    fi
-    
     create_leef_rsyslog_config
     optimize_services
     run_leef_tests
@@ -592,29 +537,29 @@ main() {
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --tls)
-            USE_TLS=true
-            shift
-            ;;
         --minimal)
             USE_MINIMAL_RULES=true
             shift
             ;;
         -h|--help)
-            echo "QRadar LEEF v2 Optimizer v$SCRIPT_VERSION"
+            echo "QRadar Dual Format Optimizer v$SCRIPT_VERSION"
             echo ""
             echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --tls      Enable TLS encryption (port 6514 recommended)"
             echo "  --minimal  Use minimal audit rules for EPS optimization"
             echo "  --help     Show this help message"
             echo ""
+            echo "Features:"
+            echo "  • Dual format output (LEEF v2 + Traditional)"
+            echo "  • Non-TLS TCP transmission"
+            echo "  • EPS optimization with minimal rules"
+            echo "  • Backward compatibility maintained"
+            echo ""
             echo "Examples:"
             echo "  $0 192.168.1.100 514"
-            echo "  $0 192.168.1.100 6514 --tls"
             echo "  $0 192.168.1.100 514 --minimal"
-            echo "  $0 192.168.1.100 6514 --tls --minimal"
+            echo "  $0 192.168.1.100 1514 --minimal"
             exit 0
             ;;
         -*)
@@ -635,8 +580,8 @@ done
 
 # Validate required arguments
 if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
-    echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [--tls] [--minimal]"
-    echo "Example: $0 192.168.1.100 6514 --tls --minimal"
+    echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
+    echo "Example: $0 192.168.1.100 514 --minimal"
     exit 1
 fi
 

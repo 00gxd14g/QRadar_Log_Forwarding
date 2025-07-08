@@ -11,12 +11,13 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
+- **Dual Format Log Support**: Simultaneous LEEF v2 and traditional format output for maximum compatibility
 - **LEEF v2 Format Support**: IBM QRadar optimized Log Event Extended Format v2.0 with standardized field mapping
 - **Enhanced Audit Rules Management**: Multi-layered audit rules loading with intelligent fallback mechanisms
 - **Direct Audit.Log Monitoring**: Automatic fallback to direct /var/log/audit/audit.log monitoring when audit rules fail
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
 - **EPS Optimization**: Minimal audit rules focusing on 5 critical security categories for reduced event volume
-- **TLS Encryption Support**: Secure log transmission with TLS encryption on port 6514
+- **Non-TLS TCP Transmission**: Reliable TCP-based log forwarding without encryption overhead
 - **RHEL Compatibility**: Enhanced RHEL 7/8 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
@@ -349,28 +350,30 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Changelog**: View [CHANGELOG.md](CHANGELOG.md) for detailed version history
 - **Security**: Report security vulnerabilities privately to the project maintainer
 
-## 🔧 LEEF v2 Optimization Features (v4.1.0+)
+## 🔧 Dual Format Optimization Features (v4.1.0+)
 
-### QRadar LEEF v2 Optimizer
-A specialized script for optimizing existing QRadar installations with IBM best practices:
+### QRadar Dual Format Optimizer
+A specialized script for optimizing existing QRadar installations with dual format output:
 
 ```bash
-# Enable LEEF v2 format with minimal audit rules
+# Enable dual format (LEEF v2 + Traditional) with standard audit rules
+sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 514
+
+# Enable dual format with minimal audit rules for EPS optimization
 sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 514 --minimal
 
-# Enable LEEF v2 with TLS encryption
-sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 6514 --tls
-
-# Full optimization (LEEF v2 + TLS + minimal rules)
-sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 6514 --tls --minimal
+# Support for custom ports
+sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 1514 --minimal
 ```
 
-### LEEF v2 Benefits
+### Dual Format Benefits
+- **Maximum Compatibility**: Both LEEF v2 and traditional formats sent simultaneously
+- **Zero Downtime Migration**: Existing QRadar rules continue to work with traditional format
+- **Enhanced Analytics**: LEEF v2 format provides structured fields for advanced correlation
+- **Future-Proof Configuration**: Ready for LEEF v2 adoption while maintaining current functionality
 - **Standardized Field Mapping**: Consistent audit field extraction across all events
 - **Single-Field Command Reconstruction**: Complete command lines in one field for easier parsing
 - **QRadar DSM Optimization**: Optimized for IBM QRadar parsing efficiency
-- **Reduced Processing Overhead**: Structured format reduces QRadar parsing load
-- **Enhanced Analytics**: Better correlation and threat hunting capabilities
 
 ### EPS Optimization Categories
 The minimal audit rules focus on 5 critical security categories:
@@ -382,20 +385,22 @@ The minimal audit rules focus on 5 critical security categories:
 5. **System Shutdown/Reboot**: System state change tracking
 
 ### Expected Performance Improvements
-- **70-80% EPS Reduction**: Compared to default comprehensive audit rules
-- **Faster QRadar Processing**: LEEF v2 format reduces parsing overhead
+- **70-80% EPS Reduction**: Compared to default comprehensive audit rules (with --minimal option)
+- **Dual Format Advantages**: LEEF v2 format reduces parsing overhead while maintaining compatibility
+- **Non-TLS Performance**: TCP transmission without encryption overhead for faster processing
 - **Better Resource Utilization**: Focused monitoring reduces system impact
-- **Enhanced Threat Detection**: Quality over quantity approach
+- **Enhanced Threat Detection**: Quality over quantity approach with dual format visibility
 
 ## 📈 Latest Updates
 
 ### Version 4.1.0 (Current) ✨
-- **LEEF v2 Format Support**: Complete IBM QRadar LEEF v2 implementation
-- **EPS Optimization**: Minimal audit rules for enterprise environments
-- **TLS Encryption Support**: Secure log transmission capabilities
-- **QRadar LEEF Optimizer**: Dedicated optimization script for existing installations
-- **Advanced Field Extraction**: Regex-based audit field parsing
-- **Dual Format Output**: Backward compatibility with traditional and LEEF formats
+- **Dual Format Output**: Simultaneous LEEF v2 and traditional format transmission
+- **Non-TLS TCP Transmission**: Reliable, high-performance log forwarding without encryption overhead
+- **Complete LEEF v2 Implementation**: IBM QRadar optimized format with standardized field mapping
+- **EPS Optimization**: Minimal audit rules focusing on 5 critical security categories
+- **QRadar Dual Format Optimizer**: Dedicated optimization script for existing installations
+- **Advanced Field Extraction**: Regex-based audit field parsing within rsyslog
+- **Maximum Compatibility**: Zero-downtime migration with existing QRadar rules
 
 ### Version 4.0.0
 - **Universal Installer Architecture**: Complete restructure with distribution-specific installers

@@ -859,7 +859,8 @@ if \$syslogfacility-text == "local3" then {
         set \$.full_command = "N/A";
     }
     
-    # Diğer audit mesajlarını LEEF v2 format ile ilet
+    # Diğer audit mesajlarını dual format ile ilet (LEEF v2 + Traditional)
+    # LEEF v2 format
     action(
         type="omfwd"
         target="$QRADAR_IP"
@@ -875,13 +876,42 @@ if \$syslogfacility-text == "local3" then {
         action.resumeInterval="10"
     )
     
+    # Traditional format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="QRadarDebianFormat"
+        queue.type="linkedlist"
+        queue.size="50000"
+        queue.dequeuebatchsize="500"
+        action.resumeRetryCount="-1"
+        action.reportSuspension="on"
+        action.reportSuspensionContinuation="on"
+        action.resumeInterval="10"
+    )
+    
     stop
 }
 
-# Kimlik doğrulama olayları (authpriv/auth)
+# Kimlik doğrulama olayları (authpriv/auth) - Dual Format
 if \$syslogfacility-text == "authpriv" or \$syslogfacility-text == "auth" then {
-    # Sadece güvenlik ile ilgili auth olaylarını ilet
+    # Sadece güvenlik ile ilgili auth olaylarını dual format ile ilet
     if \$msg contains "sudo" or \$msg contains "su:" or \$msg contains "ssh" or \$msg contains "login" or \$msg contains "authentication" or \$msg contains "FAILED" or \$msg contains "invalid" or \$msg contains "denied" then {
+        # LEEF v2 format for auth events
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2Debian"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
+        
+        # Traditional format for auth events
         action(
             type="omfwd"
             target="$QRADAR_IP"
@@ -896,10 +926,23 @@ if \$syslogfacility-text == "authpriv" or \$syslogfacility-text == "auth" then {
     stop
 }
 
-# Kritik sistem mesajları (önem seviyesi 3 ve altı)
+# Kritik sistem mesajları (önem seviyesi 3 ve altı) - Dual Format
 if \$syslogseverity <= 3 then {
     # Sistem gürültüsünü filtrele
     if not (\$msg contains "systemd:" or \$msg contains "NetworkManager" or \$msg contains "chronyd") then {
+        # LEEF v2 format for critical messages
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2Debian"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
+        
+        # Traditional format for critical messages
         action(
             type="omfwd"
             target="$QRADAR_IP"
@@ -972,18 +1015,44 @@ ruleset(name="direct_audit_processing") {
             queue.size="25000"
             action.resumeRetryCount="-1"
         )
+        
+        # Send traditional format directly
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="QRadarDebianFormat"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
         stop
     } else {
         set \$.full_command = "N/A";
     }
     
-    # Diğer audit olaylarını LEEF v2 format ile ilet
+    # Diğer audit olaylarını dual format ile ilet (LEEF v2 + Traditional)
+    # LEEF v2 format
     action(
         type="omfwd"
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
         template="LEEFv2Debian"
+        queue.type="linkedlist"
+        queue.size="25000"
+        action.resumeRetryCount="-1"
+        action.reportSuspension="on"
+    )
+    
+    # Traditional format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="QRadarDebianFormat"
         queue.type="linkedlist"
         queue.size="25000"
         action.resumeRetryCount="-1"
