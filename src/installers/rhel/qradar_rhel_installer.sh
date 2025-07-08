@@ -837,13 +837,28 @@ template(name="LEEFv2RHEL" type="string"
 template(name="QRadarRHELFormat" type="string" 
          string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
-# Gürültülü sistem mesajlarını engelle
-if \$msg contains "systemd:" or \$msg contains "NetworkManager" or \$msg contains "dhclient" or \$msg contains "chronyd" or \$msg contains "avahi" then {
+# Enhanced noise reduction - Block unnecessary daemon and kernel messages for RHEL
+if (\$msg contains "systemd:" and not (\$msg contains "Failed" or \$msg contains "failed" or \$msg contains "error" or \$msg contains "denied")) or 
+   \$msg contains "NetworkManager" or 
+   \$msg contains "dhclient" or 
+   \$msg contains "chronyd" or 
+   \$msg contains "avahi" or
+   \$msg contains "dbus" or
+   \$msg contains "cron[" or
+   \$msg contains "CRON[" or
+   \$msg contains "anacron" or
+   \$msg contains "logrotate" or
+   \$msg contains "rsyslog:" or
+   \$msg contains "systemd-logind" or
+   \$msg contains "systemd-resolved" or
+   \$msg contains "systemd-timesyncd" or
+   \$msg contains "firewalld" or
+   \$msg contains "packagekit" then {
     stop
 }
 
-# Kernel mesajlarını engelle (güvenlik olayları hariç)
-if \$syslogfacility-text == "kern" and not (\$msg contains "denied" or \$msg contains "blocked" or \$msg contains "failed") then {
+# Enhanced kernel message filtering - Only security relevant events for RHEL  
+if \$syslogfacility-text == "kern" and not (\$msg contains "denied" or \$msg contains "blocked" or \$msg contains "failed" or \$msg contains "segfault" or \$msg contains "killed" or \$msg contains "audit" or \$msg contains "firewall" or \$msg contains "selinux") then {
     stop
 }
 
@@ -856,10 +871,35 @@ input(
     ruleset="rhel_messages_processing"
 )
 
-# RHEL messages işleme kuralları
+# RHEL messages işleme kuralları - Enhanced MITRE ATT&CK monitoring
 ruleset(name="rhel_messages_processing") {
-    # Sadece güvenlik ile ilgili mesajları ilet
-    if \$msg contains "FAILED" or \$msg contains "denied" or \$msg contains "authentication" or \$msg contains "sudo" or \$msg contains "su:" or \$msg contains "selinux" or \$msg contains "firewall" then {
+    # Enhanced security event detection for RHEL/Enterprise environments
+    if \$msg contains "FAILED" or \$msg contains "denied" or \$msg contains "authentication" or \$msg contains "sudo" or \$msg contains "su:" or
+       \$msg contains "Invalid user" or \$msg contains "Failed password" or \$msg contains "Connection closed" or
+       \$msg contains "Accepted publickey" or \$msg contains "Accepted password" or \$msg contains "session opened" or 
+       \$msg contains "session closed" or \$msg contains "privilege escalation" or \$msg contains "pkexec" or
+       \$msg contains "polkit" or \$msg contains "pam_" or \$msg contains "login:" or \$msg contains "logout:" or
+       \$msg contains "useradd" or \$msg contains "userdel" or \$msg contains "usermod" or \$msg contains "groupadd" or
+       \$msg contains "passwd:" or \$msg contains "chage" or \$msg contains "mount" or \$msg contains "umount" or
+       \$msg contains "iptables" or \$msg contains "firewall" or \$msg contains "firewalld" or 
+       \$msg contains "service started" or \$msg contains "service stopped" or \$msg contains "systemctl" or
+       \$msg contains "crontab" or \$msg contains "at[" or \$msg contains "batch" or
+       \$msg contains "selinux" or \$msg contains "setroubleshoot" or \$msg contains "avc" or
+       \$msg contains "yum" or \$msg contains "dnf" or \$msg contains "rpm" then {
+        # LEEF v2 format for enhanced events
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2RHEL"
+            queue.type="linkedlist"
+            queue.size="50000"
+            action.resumeRetryCount="-1"
+            action.reportSuspension="on"
+        )
+        
+        # Traditional format for compatibility
         action(
             type="omfwd"
             target="$QRADAR_IP"
@@ -870,6 +910,53 @@ ruleset(name="rhel_messages_processing") {
             queue.size="50000"
             action.resumeRetryCount="-1"
             action.reportSuspension="on"
+        )
+    }
+    stop
+}
+
+# MITRE ATT&CK File Activity Monitoring for RHEL (yum.log/dnf.log)
+input(
+    type="imfile"
+    file="/var/log/yum.log"
+    tag="rhel-package-yum"
+    facility="local5"
+    ruleset="rhel_file_activity_processing"
+)
+
+input(
+    type="imfile"
+    file="/var/log/dnf.log"
+    tag="rhel-package-dnf"
+    facility="local5"
+    ruleset="rhel_file_activity_processing"
+)
+
+ruleset(name="rhel_file_activity_processing") {
+    # Package installation/removal monitoring (T1505.003, T1027) for RHEL
+    if \$msg contains "Installed" or \$msg contains "Removed" or \$msg contains "Updated" or \$msg contains "Erased" then {
+        # LEEF v2 format for package activities
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2RHEL"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
+        
+        # Traditional format
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="QRadarRHELFormat"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
         )
     }
     stop
@@ -894,21 +981,29 @@ if \$syslogfacility-text == "local3" then {
     
     # EXECVE mesajlarını özel parser ile işle
     if \$msg contains "type=EXECVE" then {
-        # EXECVE command reconstruction
+        # EXECVE command reconstruction - Enhanced to 10 arguments
         set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a6 = regex_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a7 = regex_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a8 = regex_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a9 = regex_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
         
-        # Build full command line
+        # Build full command line with extended argument support
         set \$.full_command = \$.a0;
         if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
         if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
         if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
         if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
         if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
+        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
+        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
+        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
+        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
         
         # Send with traditional parser
         action(
@@ -1059,21 +1154,29 @@ ruleset(name="direct_audit_processing") {
     
     # EXECVE mesajlarını parser ile işle
     if \$msg contains "type=EXECVE" then {
-        # EXECVE command reconstruction
+        # EXECVE command reconstruction - Enhanced to 10 arguments
         set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a6 = regex_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a7 = regex_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a8 = regex_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a9 = regex_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
         
-        # Build full command line
+        # Build full command line with extended argument support
         set \$.full_command = \$.a0;
         if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
         if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
         if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
         if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
         if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
+        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
+        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
+        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
+        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
         
         # Send with traditional parser
         action(
