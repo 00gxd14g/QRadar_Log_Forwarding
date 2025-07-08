@@ -751,6 +751,10 @@ main_queue(
     queue.timeoutshutdown="10000"
 )
 
+# LEEF v2 template for QRadar integration
+template(name="LEEFv2Debian" type="string" 
+         string="LEEF:2.0|Linux|Debian|4.0.0|%\$.audit_type%|^|devTime=%timereported:::date-rfc3339%^src=%hostname%^auid=%\$.auid%^uid=%\$.uid%^euid=%\$.euid%^pid=%\$.pid%^exe=%\$.exe%^cmd=%\$.full_command%^success=%\$.success%^key=%\$.key%^system_type=Debian^version=$DEBIAN_VERSION\\n")
+
 # QRadar için template
 template(name="QRadarDebianFormat" type="string" 
          string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
@@ -793,15 +797,42 @@ ruleset(name="debian_syslog_processing") {
     stop
 }
 
-# Audit log'larını işle (local3 facility)
+# Audit log'larını işle (local3 facility) with LEEF v2 support
 if \$syslogfacility-text == "local3" then {
     # Gürültülü audit mesajlarını filtrele
     if \$msg contains "proctitle=" or \$msg contains "PROCTITLE" or \$msg contains "unknown file" then {
         stop
     }
     
+    # Extract audit fields for LEEF processing
+    set \$.audit_type = regex_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
+    set \$.auid = regex_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
+    set \$.uid = regex_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
+    set \$.euid = regex_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
+    set \$.pid = regex_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
+    set \$.exe = regex_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
+    set \$.success = regex_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
+    set \$.key = regex_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
+    
     # EXECVE mesajlarını özel parser ile işle
     if \$msg contains "type=EXECVE" then {
+        # EXECVE command reconstruction
+        set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        
+        # Build full command line
+        set \$.full_command = \$.a0;
+        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
+        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
+        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
+        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
+        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
+        
+        # Send with traditional parser
         action(
             type="omprog"
             binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
@@ -810,16 +841,31 @@ if \$syslogfacility-text == "local3" then {
             queue.size="10000"
             action.resumeRetryCount="-1"
         )
+        
+        # Send LEEF v2 format directly to QRadar
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2Debian"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+            action.reportSuspension="on"
+        )
         stop
+    } else {
+        set \$.full_command = "N/A";
     }
     
-    # Diğer audit mesajlarını doğrudan ilet
+    # Diğer audit mesajlarını LEEF v2 format ile ilet
     action(
         type="omfwd"
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="QRadarDebianFormat"
+        template="LEEFv2Debian"
         queue.type="linkedlist"
         queue.size="50000"
         queue.dequeuebatchsize="500"
@@ -880,26 +926,68 @@ input(
 )
 
 ruleset(name="direct_audit_processing") {
+    # Extract audit fields for LEEF processing
+    set \$.audit_type = regex_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
+    set \$.auid = regex_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
+    set \$.uid = regex_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
+    set \$.euid = regex_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
+    set \$.pid = regex_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
+    set \$.exe = regex_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
+    set \$.success = regex_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
+    set \$.key = regex_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
+    
     # EXECVE mesajlarını parser ile işle
     if \$msg contains "type=EXECVE" then {
+        # EXECVE command reconstruction
+        set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        
+        # Build full command line
+        set \$.full_command = \$.a0;
+        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
+        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
+        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
+        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
+        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
+        
+        # Send with traditional parser
         action(
             type="omprog"
             binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
             template="RSYSLOG_TraditionalFileFormat"
         )
+        
+        # Send LEEF v2 format directly
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2Debian"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
         stop
+    } else {
+        set \$.full_command = "N/A";
     }
     
-    # Diğer audit olaylarını doğrudan ilet
+    # Diğer audit olaylarını LEEF v2 format ile ilet
     action(
         type="omfwd"
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="QRadarDebianFormat"
+        template="LEEFv2Debian"
         queue.type="linkedlist"
         queue.size="25000"
         action.resumeRetryCount="-1"
+        action.reportSuspension="on"
     )
     
     stop
