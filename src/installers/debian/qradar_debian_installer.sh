@@ -31,16 +31,19 @@
 # Sürüm: 4.0.0 - Universal Debian Edition
 # ===============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 # ===============================================================================
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
+readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-debian-universal"
-readonly LOG_FILE="/var/log/qradar_debian_setup.log"
-readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly LOG_FILE="qradar_debian_setup.log"
+BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly BACKUP_DIR
 
 # Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
@@ -63,6 +66,7 @@ SYSLOG_FILE="/var/log/syslog"
 QRADAR_IP=""
 QRADAR_PORT=""
 USE_MINIMAL_RULES=false
+DRY_RUN=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -143,12 +147,14 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_file
+backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
         log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
     fi
 }
+
 
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
@@ -299,94 +305,7 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cat > "$CONCAT_SCRIPT_PATH" << 'EOF'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-QRadar Universal Debian/Kali EXECVE Parser v4.0.0
-
-Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
-tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
-
-Debian 9+ ve tüm Kali sürümlerinde çalışır.
-"""
-
-import sys
-import re
-import socket
-import signal
-from datetime import datetime
-
-class DebianExecveParser:
-    def __init__(self):
-        # Signal handler'ları ayarla
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Graceful shutdown için signal handler"""
-        sys.exit(0)
-    
-    def process_execve_line(self, line):
-        """EXECVE audit log satırını işle ve komut argümanlarını birleştir"""
-        if "type=EXECVE" not in line:
-            return line
-        
-        # Proctitle satırlarını atla
-        if "proctitle=" in line or "PROCTITLE" in line:
-            return None
-        
-        try:
-            # Tüm argüman alanlarını yakala: a0="...", a1="...", vb.
-            args_pattern = r'a(\d+)="([^"]*)"'
-            args_matches = re.findall(args_pattern, line)
-            
-            if not args_matches:
-                return line
-            
-            # Argümanları index'e göre sırala
-            args_dict = {}
-            for arg_index, arg_value in args_matches:
-                args_dict[int(arg_index)] = arg_value
-            
-            # Argümanları sıralı şekilde birleştir
-            sorted_args = sorted(args_dict.items())
-            combined_command = " ".join(arg[1] for arg in sorted_args)
-            
-            # Mevcut aX="..." alanlarını kaldır
-            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
-            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
-            
-            # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
-            return processed_line
-            
-        except Exception as e:
-            # Hata durumunda orijinal satırı döndür
-            return line
-    
-    def run(self):
-        """Ana işlem döngüsü"""
-        try:
-            for line in sys.stdin:
-                line = line.strip()
-                if line:
-                    processed_line = self.process_execve_line(line)
-                    if processed_line is not None:
-                        print(processed_line, flush=True)
-        except (KeyboardInterrupt, BrokenPipeError):
-            pass
-        except Exception:
-            sys.exit(1)
-
-if __name__ == "__main__":
-    parser = DebianExecveParser()
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        success = parser.run()
-        sys.exit(0 if success else 1)
-    else:
-        parser.run()
-EOF
+    cp "$SCRIPT_DIR/../helpers/execve_parser.py" "$CONCAT_SCRIPT_PATH"
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"
@@ -702,7 +621,8 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
+        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
+        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog Debian/Kali Universal yapılandırması tamamlandı"
@@ -713,6 +633,11 @@ configure_rsyslog() {
 # ===============================================================================
 
 restart_services() {
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY RUN: Skipping service restarts."
+        return
+    fi
+
     log "INFO" "Debian/Kali servisleri yeniden başlatılıyor..."
     
     # Servisleri enable et
@@ -810,7 +735,8 @@ run_validation_tests() {
     fi
     
     # Yerel syslog testi
-    local test_message="QRadar Debian/Kali Universal Installer test $(date '+%Y%m%d%H%M%S')"
+    local test_message
+test_message="QRadar Debian/Kali Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
     
@@ -983,6 +909,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --minimal)
             USE_MINIMAL_RULES=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         -h|--help)
