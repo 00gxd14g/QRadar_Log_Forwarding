@@ -38,8 +38,6 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_NAME
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
@@ -157,17 +155,6 @@ backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
     fi
 }
 
-# Proje kök dizinini bul
-project_root() {
-    local dir="$SCRIPT_DIR"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -f "$dir/src/installers/ubuntu/qradar_ubuntu_installer.sh" ]]; then
-            echo "$dir"
-            return
-        fi
-        dir="$(dirname "$dir")"
-    done
-}
 
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
@@ -308,94 +295,7 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cat > "$CONCAT_SCRIPT_PATH" << 'EOF'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-QRadar Universal Ubuntu EXECVE Parser v4.0.0
-
-Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
-tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
-
-Ubuntu 16.04+ tüm sürümlerinde çalışır.
-"""
-
-import sys
-import re
-import socket
-import signal
-from datetime import datetime
-
-class UbuntuExecveParser:
-    def __init__(self):
-        # Signal handler'ları ayarla
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Graceful shutdown için signal handler"""
-        sys.exit(0)
-    
-    def process_execve_line(self, line):
-        """EXECVE audit log satırını işle ve komut argümanlarını birleştir"""
-        if "type=EXECVE" not in line:
-            return line
-        
-        # Proctitle satırlarını atla
-        if "proctitle=" in line or "PROCTITLE" in line:
-            return None
-        
-        try:
-            # Tüm argüman alanlarını yakala: a0="...", a1="...", vb.
-            args_pattern = r'a(\d+)="([^"]*)"'
-            args_matches = re.findall(args_pattern, line)
-            
-            if not args_matches:
-                return line
-            
-            # Argümanları index'e göre sırala
-            args_dict = {}
-            for arg_index, arg_value in args_matches:
-                args_dict[int(arg_index)] = arg_value
-            
-            # Argümanları sıralı şekilde birleştir
-            sorted_args = sorted(args_dict.items())
-            combined_command = " ".join(arg[1] for arg in sorted_args)
-            
-            # Mevcut aX="..." alanlarını kaldır
-            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
-            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
-            
-            # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
-            return processed_line
-            
-        except Exception as e:
-            # Hata durumunda orijinal satırı döndür
-            return line
-    
-    def run(self):
-        """Ana işlem döngüsü"""
-        try:
-            for line in sys.stdin:
-                line = line.strip()
-                if line:
-                    processed_line = self.process_execve_line(line)
-                    if processed_line is not None:
-                        print(processed_line, flush=True)
-        except (KeyboardInterrupt, BrokenPipeError):
-            pass
-        except Exception:
-            sys.exit(1)
-
-if __name__ == "__main__":
-    parser = UbuntuExecveParser()
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        success = parser.run()
-        sys.exit(0 if success else 1)
-    else:
-        parser.run()
-EOF
+    cp "$SCRIPT_DIR/../helpers/execve_parser.py" "$CONCAT_SCRIPT_PATH"
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"

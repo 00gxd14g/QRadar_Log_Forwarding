@@ -38,8 +38,6 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_NAME
 readonly SCRIPT_VERSION="4.0.0-universal"
 readonly LOG_FILE="/var/log/qradar_universal_setup.log"
 
