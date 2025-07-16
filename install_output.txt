@@ -1,0 +1,98 @@
+[2025-07-16 07:55:16] [INFO] =============================================================
+[2025-07-16 07:55:16] [INFO] QRadar Universal Log Forwarding Installer v4.0.0-universal
+[2025-07-16 07:55:16] [INFO] Başlatılıyor: Wed Jul 16 07:55:16 UTC 2025
+[2025-07-16 07:55:16] [INFO] QRadar Hedefi: 1.1.1.1:514
+[2025-07-16 07:55:16] [INFO] =============================================================
+[2025-07-16 07:55:16] [INFO] Linux dağıtımı tespit ediliyor...
+[2025-07-16 07:55:16] [INFO] Ubuntu sistemi tespit edildi
+[2025-07-16 07:55:16] [SUCCESS] Dağıtım: Ubuntu 24.04.2 LTS - Installer: ubuntu
+✓ Dağıtım: Ubuntu 24.04.2 LTS - Installer: ubuntu
+[2025-07-16 07:55:16] [INFO] Uygun installer kontrol ediliyor...
+[2025-07-16 07:55:16] [SUCCESS] Installer hazır: /app/src/installers/universal/../ubuntu/qradar_ubuntu_installer.sh
+✓ Installer hazır: /app/src/installers/universal/../ubuntu/qradar_ubuntu_installer.sh
+[2025-07-16 07:55:16] [INFO] Dağıtıma özel installer çalıştırılıyor...
+
+===============================================================================
+                    QRadar Universal Log Forwarding Installer
+                                 v4.0.0-universal
+===============================================================================
+
+🖥️  Tespit Edilen Sistem: Ubuntu 24.04.2 LTS
+🔧 Kullanılacak Installer: ubuntu
+🎯 QRadar Hedefi: 1.1.1.1:514
+
+ℹ️  Bu script şu özellikleri sağlar:
+   • Otomatik dağıtım tespiti
+   • MITRE ATT&CK uyumlu audit kuralları
+   • EXECVE komut birleştirme
+   • Güvenlik odaklı log filtreleme
+   • Otomatik fallback mekanizmaları
+   • Comprehensive error handling
+
+⚠️  Kurulum devam ediyor...
+===============================================================================
+
+[2025-07-16 07:55:16] [INFO] Minimal kurallar modu aktif edildi
+[2025-07-16 07:55:16] [INFO] Çalıştırılıyor: /app/src/installers/universal/../ubuntu/qradar_ubuntu_installer.sh 1.1.1.1 514 --minimal
+[2025-07-16 07:55:16] [INFO] =============================================================
+[2025-07-16 07:55:16] [INFO] QRadar Universal Ubuntu Log Forwarding Installer v4.0.0-ubuntu-universal
+[2025-07-16 07:55:16] [INFO] Başlatılıyor: Wed Jul 16 07:55:16 UTC 2025
+[2025-07-16 07:55:16] [INFO] QRadar Hedefi: 1.1.1.1:514
+[2025-07-16 07:55:16] [INFO] =============================================================
+[2025-07-16 07:55:16] [INFO] Ubuntu sürümü tespit ediliyor...
+[2025-07-16 07:55:16] [SUCCESS] Ubuntu 24.04 (noble) tespit edildi ve destekleniyor
+✓ Ubuntu 24.04 (noble) tespit edildi ve destekleniyor
+[2025-07-16 07:55:16] [INFO] Ubuntu sürümüne göre audisp metodu belirleniyor...
+[2025-07-16 07:55:16] [INFO] Modern audit metodu kullanılacak (/etc/audit/plugins.d/)
+[2025-07-16 07:55:16] [INFO] Gerekli paketler kontrol ediliyor ve kuruluyor...
+[2025-07-16 07:55:16] [DEBUG] Çalıştırılıyor: Paket listesi güncelleme (Deneme 1/3) - Komut: apt-get update
+[2025-07-16 07:55:26] [DEBUG] Paket listesi güncelleme (Deneme 1/3) - BAŞARILI
+[2025-07-16 07:55:26] [INFO] auditd paketi kurulu değil
+[2025-07-16 07:55:26] [INFO] rsyslog paketi kurulu değil
+[2025-07-16 07:55:26] [INFO] python3 paketi kurulu değil
+[2025-07-16 07:55:26] [INFO] Kurulacak paketler: auditd rsyslog python3
+[2025-07-16 07:55:26] [DEBUG] Çalıştırılıyor: Paket kurulumu (Deneme 1/3) - Komut: apt-get install -y auditd rsyslog python3
+[2025-07-16 07:55:43] [DEBUG] Paket kurulumu (Deneme 1/3) - BAŞARILI
+[2025-07-16 07:55:43] [SUCCESS] Paketler başarıyla kuruldu: auditd rsyslog python3
+✓ Paketler başarıyla kuruldu: auditd rsyslog python3
+[2025-07-16 07:55:43] [SUCCESS] Tüm kritik binary'ler doğrulandı
+✓ Tüm kritik binary'ler doğrulandı
+[2025-07-16 07:55:43] [INFO] EXECVE komut ayrıştırıcısı deploy ediliyor...
+[2025-07-16 07:55:43] [SUCCESS] EXECVE komut ayrıştırıcısı başarıyla deploy edildi ve test edildi
+✓ EXECVE komut ayrıştırıcısı başarıyla deploy edildi ve test edildi
+[2025-07-16 07:55:43] [INFO] Auditd kuralları yapılandırılıyor...
+[2025-07-16 07:55:43] [INFO] Minimal audit kuralları kullanılıyor
+[2025-07-16 07:55:43] [SUCCESS] Ubuntu Universal audit kuralları yapılandırıldı
+✓ Ubuntu Universal audit kuralları yapılandırıldı
+[2025-07-16 07:55:43] [INFO] Ubuntu sürümüne göre audisp yapılandırılıyor...
+[2025-07-16 07:55:43] [INFO] /etc/audit/plugins.d/syslog.conf dosyası /etc/qradar_backup_20250716_075516/syslog.conf.075543 konumuna yedeklendi
+[2025-07-16 07:55:43] [INFO] Modern audit yapılandırması (Ubuntu 24.04)
+[2025-07-16 07:55:43] [SUCCESS] Audisp syslog plugin yapılandırıldı (modern method)
+✓ Audisp syslog plugin yapılandırıldı (modern method)
+[2025-07-16 07:55:43] [INFO] Rsyslog QRadar iletimi yapılandırılıyor...
+[2025-07-16 07:55:43] [SUCCESS] Rsyslog Ubuntu Universal yapılandırması tamamlandı
+✓ Rsyslog Ubuntu Universal yapılandırması tamamlandı
+[2025-07-16 07:55:43] [INFO] Doğrudan audit.log izleme fallback yapılandırması ekleniyor...
+[2025-07-16 07:55:43] [SUCCESS] Doğrudan audit.log izleme fallback eklendi
+✓ Doğrudan audit.log izleme fallback eklendi
+[2025-07-16 07:55:43] [INFO] Servisler yeniden başlatılıyor...
+[2025-07-16 07:55:43] [DEBUG] Çalıştırılıyor: auditd servisini enable etme - Komut: systemctl enable auditd
+[2025-07-16 07:55:44] [DEBUG] auditd servisini enable etme - BAŞARILI
+[2025-07-16 07:55:44] [DEBUG] Çalıştırılıyor: rsyslog servisini enable etme - Komut: systemctl enable rsyslog
+[2025-07-16 07:55:44] [DEBUG] rsyslog servisini enable etme - BAŞARILI
+[2025-07-16 07:55:44] [DEBUG] Çalıştırılıyor: auditd servisini durdurma - Komut: systemctl stop auditd
+[2025-07-16 07:55:44] [DEBUG] auditd servisini durdurma - BAŞARILI
+[2025-07-16 07:55:44] [DEBUG] Çalıştırılıyor: rsyslog servisini durdurma - Komut: systemctl stop rsyslog
+[2025-07-16 07:55:44] [DEBUG] rsyslog servisini durdurma - BAŞARILI
+[2025-07-16 07:55:47] [DEBUG] Çalıştırılıyor: auditd servisini başlatma (Deneme 1/3) - Komut: systemctl start auditd
+[2025-07-16 07:55:47] [WARN] auditd servisini başlatma (Deneme 1/3) - BAŞARISIZ (Çıkış kodu: 1)
+[2025-07-16 07:55:47] [INFO] 5 saniye sonra tekrar denenecek...
+[2025-07-16 07:55:52] [DEBUG] Çalıştırılıyor: auditd servisini başlatma (Deneme 2/3) - Komut: systemctl start auditd
+[2025-07-16 07:55:52] [WARN] auditd servisini başlatma (Deneme 2/3) - BAŞARISIZ (Çıkış kodu: 1)
+[2025-07-16 07:55:52] [INFO] 5 saniye sonra tekrar denenecek...
+[2025-07-16 07:55:57] [DEBUG] Çalıştırılıyor: auditd servisini başlatma (Deneme 3/3) - Komut: systemctl start auditd
+[2025-07-16 07:55:57] [WARN] auditd servisini başlatma (Deneme 3/3) - BAŞARISIZ (Çıkış kodu: 1)
+[2025-07-16 07:55:57] [ERROR] auditd servisini başlatma 3 denemeden sonra başarısız oldu
+Detaylar için /var/log/qradar_ubuntu_setup.log dosyasını kontrol edin.
+[2025-07-16 07:55:57] [ERROR] Installer çalıştırma başarısız oldu
+Detaylar için /var/log/qradar_universal_setup.log dosyasını kontrol edin.

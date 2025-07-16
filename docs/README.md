@@ -16,9 +16,9 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 - **Enhanced Audit Rules Management**: Multi-layered audit rules loading with intelligent fallback mechanisms
 - **Direct Audit.Log Monitoring**: Automatic fallback to direct /var/log/audit/audit.log monitoring when audit rules fail
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
-- **EPS Optimization**: Minimal audit rules focusing on 5 critical security categories for reduced event volume
+- **EPS Optimization**: Optional minimal audit rules focusing on 5 critical security categories for reduced event volume.
 - **Non-TLS TCP Transmission**: Reliable TCP-based log forwarding without encryption overhead
-- **RHEL Compatibility**: Enhanced RHEL 7/8 support with platform-specific service management
+- **RHEL Compatibility**: Enhanced RHEL 7/8/9 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
 - **Production Ready**: Designed for enterprise environments with proper error handling and recovery
@@ -57,26 +57,29 @@ The script automatically installs required packages:
    # Option 1: Clone the repository
    git clone https://github.com/00gxd14g/QRadar_Log_Forwarding.git
    cd QRadar_Log_Forwarding
-   chmod +x setup_qradar_logging.sh
    
    # Option 2: Download latest release
-   wget https://github.com/00gxd14g/QRadar_Log_Forwarding/releases/latest/download/setup_qradar_logging.sh
-   chmod +x setup_qradar_logging.sh
+   wget https://github.com/00gxd14g/QRadar_Log_Forwarding/releases/latest/download/qradar_universal_installer.sh
+   chmod +x qradar_universal_installer.sh
    ```
 
-2. **Run the enhanced setup**:
+2. **Run the universal installer**:
    ```bash
-   sudo ./setup_qradar_logging.sh <QRADAR_IP> <QRADAR_PORT>
+   # Standard installation with comprehensive audit rules
+   sudo ./src/installers/universal/qradar_universal_installer.sh <QRADAR_IP> <QRADAR_PORT>
+
+   # Installation with minimal audit rules for EPS optimization
+   sudo ./src/installers/universal/qradar_universal_installer.sh <QRADAR_IP> <QRADAR_PORT> --minimal
    ```
 
 ### Example Usage
 
 ```bash
-# Configure for QRadar at 192.168.1.100 on port 514
-sudo ./setup_qradar_logging.sh 192.168.1.100 514
+# Configure for QRadar at 192.168.1.100 on port 514 with standard rules
+sudo ./src/installers/universal/qradar_universal_installer.sh 192.168.1.100 514
 
-# Configure for QRadar at 10.0.0.50 on port 1514
-sudo ./setup_qradar_logging.sh 10.0.0.50 1514
+# Configure for QRadar at 10.0.0.50 on port 1514 with minimal rules
+sudo ./src/installers/universal/qradar_universal_installer.sh 10.0.0.50 1514 --minimal
 ```
 
 ### Command Line Arguments
@@ -85,6 +88,8 @@ sudo ./setup_qradar_logging.sh 10.0.0.50 1514
 |-----------|-------------|---------|
 | `QRADAR_IP` | IP address of your QRadar server | `192.168.1.100` |
 | `QRADAR_PORT` | Port number for log forwarding | `514` |
+| `--minimal` | (Optional) Use minimal audit rules for EPS optimization | |
+
 
 ## 🔧 Configuration Details
 
@@ -126,11 +131,11 @@ The script implements comprehensive security monitoring covering:
 After installation, configuration files are located at:
 
 ```
-/etc/audit/rules.d/audit.rules          # Audit rules
+/etc/audit/rules.d/99-qradar.rules       # Audit rules
 /etc/audit/plugins.d/syslog.conf         # Audisp-syslog plugin config
-/etc/rsyslog.d/10-qradar.conf            # Rsyslog QRadar forwarding config
-/usr/local/bin/concat_execve.py          # Command concatenation script
-/var/log/qradar_setup.log                # Installation log
+/etc/rsyslog.d/99-qradar.conf            # Rsyslog QRadar forwarding config
+/usr/local/bin/qradar_execve_parser.py   # Command concatenation script
+/var/log/qradar_*.log                    # Installation logs
 /etc/qradar_backup_YYYYMMDD_HHMMSS/      # Configuration backups
 ```
 
@@ -166,7 +171,7 @@ sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
 #### Check Command Concatenation
 ```bash
 # Test the Python script directly
-echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/concat_execve.py --test
+echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/qradar_execve_parser.py --test
 ```
 
 ## 🛡️ Security Considerations
@@ -190,7 +195,7 @@ All configuration files are created with appropriate permissions:
 - Python script: `755` (executable)
 - Log files: `640` (root:root)
 
-## 🔄 Enhanced Reliability Features (v3.1+)
+## 🔄 Enhanced Reliability Features
 
 ### Multi-Layered Audit Rules Loading
 The script now uses multiple approaches to ensure audit rules are loaded:
@@ -208,7 +213,7 @@ When traditional audit rules fail to load, the script automatically configures:
 
 ### RHEL-Specific Enhancements
 - **RHEL 7**: Automatic audispd-plugins package installation
-- **RHEL 8**: Enhanced service management using service commands
+- **RHEL 8/9**: Enhanced service management using service commands
 - **Platform Detection**: Intelligent handling of distribution-specific quirks
 - **Error Recovery**: Comprehensive retry mechanisms
 
@@ -228,13 +233,13 @@ QRADAR_PROCESSED: type=EXECVE msg=audit(1618834123.456:789): argc=3 cmd="ls -la 
 - **Simplified Parsing**: Single `cmd` field instead of multiple `aX` fields
 - **Better Readability**: Complete command visible in SIEM
 - **Enhanced Analytics**: Easier to create QRadar rules and searches
-- **Processing Indicator**: `QRADAR_PROCESSED` prefix for tracking
+- **Processing Indicator**: `*_PROCESSED` prefix for tracking
 
 ## 🆘 Troubleshooting Guide
 
 For comprehensive troubleshooting, see **[MANUAL_FIXES.md](MANUAL_FIXES.md)** which includes:
 - Platform-specific manual fix procedures
-- RHEL 7/8 specific issues and solutions
+- RHEL 7/8/9 specific issues and solutions
 - Service management commands
 - Network connectivity tests
 - Step-by-step recovery procedures
@@ -254,7 +259,7 @@ sudo journalctl -u rsyslog -f
 #### No Logs Reaching QRadar
 ```bash
 # Verify local syslog is working
-sudo grep "local3" /var/log/syslog
+sudo grep "local3" /var/log/syslog /var/log/messages
 
 # Check network connectivity
 sudo telnet <QRADAR_IP> <QRADAR_PORT>
@@ -275,26 +280,25 @@ sudo getsebool -a | grep rsyslog
 #### Python Script Issues
 ```bash
 # Test script manually
-sudo python3 /usr/local/bin/concat_execve.py --test
+sudo python3 /usr/local/bin/qradar_execve_parser.py --test
 
 # Check script permissions
-ls -la /usr/local/bin/concat_execve.py
+ls -la /usr/local/bin/qradar_execve_parser.py
 ```
 
 ### Log Files
 
 Check these log files for troubleshooting:
-- `/var/log/qradar_setup.log` - Setup script execution log
+- `/var/log/qradar_*_setup.log` - Setup script execution logs
 - `/var/log/audit/audit.log` - Audit events
 - `/var/log/syslog` or `/var/log/messages` - System logs
-- `/var/log/omprog_execve_output.log` - Python script output (if configured)
 
 ## 🔄 Maintenance
 
 ### Regular Tasks
 
 #### Update Audit Rules
-Edit `/etc/audit/rules.d/audit.rules` and reload:
+Edit `/etc/audit/rules.d/99-qradar.rules` and reload:
 ```bash
 sudo augenrules --load
 sudo systemctl restart auditd
@@ -350,90 +354,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Changelog**: View [CHANGELOG.md](CHANGELOG.md) for detailed version history
 - **Security**: Report security vulnerabilities privately to the project maintainer
 
-## 🔧 Dual Format Optimization Features (v4.1.0+)
-
-### QRadar Dual Format Optimizer
-A specialized script for optimizing existing QRadar installations with dual format output:
-
-```bash
-# Enable dual format (LEEF v2 + Traditional) with standard audit rules
-sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 514
-
-# Enable dual format with minimal audit rules for EPS optimization
-sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 514 --minimal
-
-# Support for custom ports
-sudo bash src/installers/universal/qradar_leef_optimizer.sh 192.168.1.100 1514 --minimal
-```
-
-### Dual Format Benefits
-- **Maximum Compatibility**: Both LEEF v2 and traditional formats sent simultaneously
-- **Zero Downtime Migration**: Existing QRadar rules continue to work with traditional format
-- **Enhanced Analytics**: LEEF v2 format provides structured fields for advanced correlation
-- **Future-Proof Configuration**: Ready for LEEF v2 adoption while maintaining current functionality
-- **Standardized Field Mapping**: Consistent audit field extraction across all events
-- **Single-Field Command Reconstruction**: Complete command lines in one field for easier parsing
-- **QRadar DSM Optimization**: Optimized for IBM QRadar parsing efficiency
-
-### EPS Optimization Categories
-The minimal audit rules focus on 5 critical security categories:
-
-1. **Process Execution Monitoring**: User and root command execution
-2. **Authentication & Privilege Escalation**: Authentication events, sudo, su usage
-3. **Critical File Access**: Identity files, sudoers, authentication configs
-4. **Service State Monitoring**: systemctl, service control commands
-5. **System Shutdown/Reboot**: System state change tracking
-
-### Expected Performance Improvements
-- **70-80% EPS Reduction**: Compared to default comprehensive audit rules (with --minimal option)
-- **Dual Format Advantages**: LEEF v2 format reduces parsing overhead while maintaining compatibility
-- **Non-TLS Performance**: TCP transmission without encryption overhead for faster processing
-- **Better Resource Utilization**: Focused monitoring reduces system impact
-- **Enhanced Threat Detection**: Quality over quantity approach with dual format visibility
-
 ## 📈 Latest Updates
 
 ### Version 4.1.0 (Current) ✨
-- **Dual Format Output**: Simultaneous LEEF v2 and traditional format transmission
-- **Non-TLS TCP Transmission**: Reliable, high-performance log forwarding without encryption overhead
-- **Complete LEEF v2 Implementation**: IBM QRadar optimized format with standardized field mapping
-- **EPS Optimization**: Minimal audit rules focusing on 5 critical security categories
-- **QRadar Dual Format Optimizer**: Dedicated optimization script for existing installations
-- **Advanced Field Extraction**: Regex-based audit field parsing within rsyslog
-- **Maximum Compatibility**: Zero-downtime migration with existing QRadar rules
-
-### Version 4.0.0
-- **Universal Installer Architecture**: Complete restructure with distribution-specific installers
-- **Enhanced Security**: Removed eval usage and implemented secure command execution
-- **Turkish Documentation**: Complete localization with troubleshooting guides
-- **GitHub Release Management**: Automated release creation and distribution archives
-
-### Version 3.1.0
-- **Enhanced Audit Rules Management**: Multi-layered loading with intelligent fallbacks
-- **Direct Audit.Log Monitoring**: Automatic fallback when audit rules fail
-- **RHEL 7/8 Compatibility**: Platform-specific fixes and enhancements
-- **Line-by-Line Rule Loading**: For problematic systems
-- **Comprehensive Error Recovery**: Automatic fallback mechanisms
-- **Enhanced Documentation**: Complete troubleshooting guide
-
-### Version 3.0.0
-- Complete rewrite with unified script
-- Enhanced error handling and logging
-- Comprehensive audit rules (50+ monitoring points)
-- Improved Python concatenation script
-- Automatic SELinux and firewall configuration
-- Support for all major Linux distributions
-- Built-in diagnostic and testing functions
-
-### Version 2.0.0
-- Added command concatenation functionality
-- Improved RHEL support
-- Basic error handling
-
-### Version 1.0.0
-- Initial release
-- Basic audit forwarding
-- Limited distribution support
+- **Dual Format Output**: Simultaneous LEEF v2 and traditional format transmission.
+- **EPS Optimization**: Optional minimal audit rules for reduced event volume.
+- **Universal Installer**: Single installer for all supported distributions.
+- **MITRE ATT&CK**: Comprehensive audit rules mapped to MITRE ATT&CK framework.
+- **Enhanced Security**: Removed `eval` usage and implemented secure command execution.
+- **RHEL 7/8/9 Compatibility**: Full support for the entire RHEL family.
+- **GitHub Release Management**: Automated release creation and distribution archives.
 
 **Full Changelog**: [CHANGELOG.md](CHANGELOG.md)
 

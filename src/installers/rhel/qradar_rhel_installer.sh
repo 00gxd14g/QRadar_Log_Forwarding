@@ -63,6 +63,7 @@ HAS_FIREWALLD=false
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
+USE_MINIMAL_RULES=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -543,7 +544,47 @@ configure_auditd() {
     backup_file "$AUDIT_RULES_FILE"
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")"
     
-    cat > "$AUDIT_RULES_FILE" << 'EOF'
+    if [[ "$USE_MINIMAL_RULES" == true ]]; then
+        log "INFO" "Minimal audit kuralları kullanılıyor"
+        cat > "$AUDIT_RULES_FILE" << 'EOF'
+# QRadar Minimal Audit Rules (EPS Optimized)
+-D
+-b 4096
+-f 1
+-r 50
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
+-a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
+-a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
+-a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
+-w /var/log/auth.log -p wa -k authentication
+-w /var/log/secure -p wa -k authentication
+-w /usr/bin/sudo -p x -k privileged_commands
+-w /bin/su -p x -k privileged_commands
+-w /usr/bin/pkexec -p x -k privileged_commands
+-w /etc/passwd -p wa -k identity_files
+-w /etc/shadow -p wa -k identity_files
+-w /etc/sudoers -p wa -k identity_files
+-w /etc/sudoers.d/ -p wa -k identity_files
+-w /usr/bin/systemctl -p x -k service_control
+-w /sbin/service -p x -k service_control
+-w /sbin/shutdown -p x -k system_shutdown
+-w /sbin/reboot -p x -k system_reboot
+-w /sbin/halt -p x -k system_shutdown
+-a exclude,always -F msgtype=SERVICE_START
+-a exclude,always -F msgtype=SERVICE_STOP
+-a exclude,always -F msgtype=BPF
+-a never,exit -F exe=/usr/bin/awk
+-a never,exit -F exe=/usr/bin/grep
+-a never,exit -F exe=/usr/bin/sed
+-a never,exit -F exe=/bin/cat
+-a never,exit -F exe=/bin/ls
+-a never,exit -F dir=/tmp/
+-a never,exit -F dir=/var/spool/
+-a never,exit -F dir=/var/tmp/
+EOF
+    else
+        log "INFO" "Standard audit kuralları kullanılıyor"
+        cat > "$AUDIT_RULES_FILE" << 'EOF'
 # QRadar Universal RHEL Family Audit Rules v4.0.0
 # RHEL 7+, CentOS 7+, Rocky, AlmaLinux, Oracle Linux için uyumlu
 # MITRE ATT&CK Framework uyumlu güvenlik monitoring
@@ -735,6 +776,7 @@ configure_auditd() {
 # Kuralları değiştirilemez yap (yüksek güvenlik ortamları için)
 # -e 2
 EOF
+    fi
     
     chmod 640 "$AUDIT_RULES_FILE"
     success "RHEL ailesi Universal audit kuralları yapılandırıldı"
@@ -1558,34 +1600,59 @@ main() {
 # SCRIPT ENTRY POINT
 # ===============================================================================
 
+# Argument parsing
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --minimal)
+            USE_MINIMAL_RULES=true
+            shift
+            ;;
+        -h|--help)
+            echo "QRadar Universal RHEL Family Installer v$SCRIPT_VERSION"
+            echo ""
+            echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --minimal  Use minimal audit rules for EPS optimization"
+            echo "  --help     Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0 192.168.1.100 514"
+            echo "  $0 192.168.1.100 514 --minimal"
+            exit 0
+            ;;
+        -*)
+            error_exit "Unknown option: $1"
+            ;;
+        *)
+            if [[ -z "$QRADAR_IP" ]]; then
+                QRADAR_IP="$1"
+            elif [[ -z "$QRADAR_PORT" ]]; then
+                QRADAR_PORT="$1"
+            else
+                error_exit "Too many arguments"
+            fi
+            shift
+            ;;
+    esac
+done
+
 # Parametre doğrulama
-if [[ $# -ne 2 ]]; then
-    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT>"
-    echo "Örnek: $0 192.168.1.100 514"
-    echo ""
-    echo "Bu script tüm RHEL ailesi dağıtımlarda çalışır:"
-    echo "  • RHEL 7, 8, 9"
-    echo "  • CentOS 7, 8, Stream 8, Stream 9"
-    echo "  • Rocky Linux 8, 9"
-    echo "  • AlmaLinux 8, 9"
-    echo "  • Oracle Linux 7, 8, 9"
-    echo "  • Amazon Linux 2"
+if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
+    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
+    echo "Örnek: $0 192.168.1.100 514 --minimal"
     exit 1
 fi
 
 # IP adresi format kontrolü
-if ! [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    error_exit "Geçersiz IP adresi formatı: $1"
+if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
 fi
 
 # Port numarası kontrolü
-if ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -lt 1 ]] || [[ "$2" -gt 65535 ]]; then
-    error_exit "Geçersiz port numarası: $2 (1-65535 arası olmalı)"
+if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
+    error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
 fi
-
-# Global değişkenleri ayarla
-QRADAR_IP="$1"
-QRADAR_PORT="$2"
 
 # Ana fonksiyonu çalıştır
 main
