@@ -72,6 +72,21 @@ DRY_RUN=false
 # YARDIMCI FONKSİYONLAR
 # ===============================================================================
 
+# -------------------- helpers --------------------
+detect_init() {
+    [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
+}
+
+start_service() {
+    local svc="$1"
+    if detect_init; then
+        systemctl start "$svc"
+    else
+        warn "Init sistemi systemd değil; $svc başlatma atlandı"
+        return 0
+    fi
+}
+
 # Geliştirilmiş logging fonksiyonu
 log() {
     local level="${1:-INFO}"
@@ -738,7 +753,7 @@ restart_services() {
     sleep 3
     
     # Auditd'yi başlat
-    retry_operation "auditd servisini başlatma" systemctl start auditd
+    retry_operation "auditd servisini başlatma" start_service "auditd"
     
     sleep 2
     
@@ -746,7 +761,7 @@ restart_services() {
     load_audit_rules
     
     # Rsyslog'u başlat
-    retry_operation "rsyslog servisini başlatma" systemctl start rsyslog
+    retry_operation "rsyslog servisini başlatma" start_service "rsyslog"
     
     success "Tüm servisler başarıyla yapılandırıldı ve başlatıldı"
 }
@@ -795,15 +810,21 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "Sistem doğrulama testleri çalıştırılıyor..."
-    
+
+    # DRY-RUN'da servis testlerini atla
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY-RUN: servis doğrulama testleri atlandı"
+        return
+    fi
+
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")
     for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service"; then
+        if detect_init && systemctl is-active --quiet "$service"; then
             success "$service servisi çalışıyor"
         else
             warn "$service servisi çalışmıyor - başlatmaya çalışılıyor..."
-            safe_execute "$service servisini başlatma" systemctl start "$service"
+            safe_execute "$service servisini başlatma" start_service "$service"
         fi
     done
     
