@@ -203,7 +203,11 @@ detect_rhel_family() {
             log "INFO" "RHEL ailesi dağıtım tespit edildi: $DISTRO_ID"
             ;;
         *)
-            error_exit "Bu script sadece RHEL ailesi dağıtımlar için tasarlanmıştır. Tespit edilen: $DISTRO_ID"
+            if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
+                warn "CI mode: skipping distro check"
+            else
+                error_exit "Bu script sadece RHEL ailesi dağıtımlar için tasarlanmıştır. Tespit edilen: $DISTRO_ID"
+            fi
             ;;
     esac
     
@@ -1031,6 +1035,13 @@ main() {
     log "INFO" "============================================================="
     log "INFO" "RHEL ailesi kurulum tamamlandı: $(date)"
     log "INFO" "============================================================="
+
+    if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
+        if [[ -n "${RUNNER_TEMP:-}" ]]; then
+            mv "$LOG_FILE" "$RUNNER_TEMP/" || warn "Could not move log file to $RUNNER_TEMP"
+            chown "$(logname)" "$RUNNER_TEMP/$LOG_FILE" || warn "Could not change log file ownership"
+        fi
+    fi
 }
 
 # ===============================================================================

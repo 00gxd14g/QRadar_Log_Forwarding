@@ -708,7 +708,7 @@ ruleset(name="direct_audit_processing") {
     set \$.exe = re_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
     set \$.success = re_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
     set \$.key = re_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
-    
+
     # Enhanced EXECVE processing in fallback mode
     if \$msg contains "type=EXECVE" then {
         # Enhanced EXECVE command reconstruction with extended arguments
@@ -722,7 +722,7 @@ ruleset(name="direct_audit_processing") {
         set \$.a7 = re_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a8 = re_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
         set \$.a9 = re_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
-        
+
         # Build complete command line with all arguments
         set \$.full_command = \$.a0;
         if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
@@ -734,14 +734,14 @@ ruleset(name="direct_audit_processing") {
         if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
         if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
         if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
-        
+
         # Send with traditional parser
         action(
             type="omprog"
             binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
             template="RSYSLOG_TraditionalFileFormat"
         )
-        
+
         # Send LEEF v2 format directly
         action(
             type="omfwd"
@@ -753,7 +753,7 @@ ruleset(name="direct_audit_processing") {
             queue.size="25000"
             action.resumeRetryCount="-1"
         )
-        
+
         # Send traditional format directly
         action(
             type="omfwd"
@@ -769,7 +769,7 @@ ruleset(name="direct_audit_processing") {
     } else {
         set \$.full_command = "N/A";
     }
-    
+
     # Diğer audit olaylarını dual format ile ilet (LEEF v2 + Traditional)
     # LEEF v2 format
     action(
@@ -783,7 +783,7 @@ ruleset(name="direct_audit_processing") {
         action.resumeRetryCount="-1"
         action.reportSuspension="on"
     )
-    
+
     # Traditional format
     action(
         type="omfwd"
@@ -796,7 +796,7 @@ ruleset(name="direct_audit_processing") {
         action.resumeRetryCount="-1"
         action.reportSuspension="on"
     )
-    
+
     stop
 }
 EOF
