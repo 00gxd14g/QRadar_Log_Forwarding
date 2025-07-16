@@ -31,16 +31,21 @@
 # Sürüm: 4.0.0 - Universal Ubuntu Edition
 # ===============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 # ===============================================================================
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
+readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
-readonly LOG_FILE="/var/log/qradar_ubuntu_setup.log"
-readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly LOG_FILE="qradar_ubuntu_setup.log"
+BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly BACKUP_DIR
 
 # Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
@@ -63,6 +68,7 @@ SYSLOG_FILE="/var/log/syslog"
 QRADAR_IP=""
 QRADAR_PORT=""
 USE_MINIMAL_RULES=false
+DRY_RUN=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -143,11 +149,24 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_file
+backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
-        log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
+        log "INFO" "file dosyası $backup_file konumuna yedeklendi"
     fi
+}
+
+# Proje kök dizinini bul
+project_root() {
+    local dir="$SCRIPT_DIR"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/src/installers/ubuntu/qradar_ubuntu_installer.sh" ]]; then
+            echo "$dir"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
 }
 
 # ===============================================================================
@@ -650,7 +669,7 @@ configure_rsyslog() {
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
         -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
-        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
+        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
@@ -681,28 +700,28 @@ input(
 
 ruleset(name="direct_audit_processing") {
     # Extract audit fields for LEEF processing
-    set \$.audit_type = regex_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
-    set \$.auid = regex_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
-    set \$.uid = regex_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
-    set \$.euid = regex_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
-    set \$.pid = regex_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
-    set \$.exe = regex_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
-    set \$.success = regex_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
-    set \$.key = regex_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
+    set \$.audit_type = re_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
+    set \$.auid = re_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
+    set \$.uid = re_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
+    set \$.euid = re_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
+    set \$.pid = re_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
+    set \$.exe = re_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
+    set \$.success = re_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
+    set \$.key = re_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
     
     # Enhanced EXECVE processing in fallback mode
     if \$msg contains "type=EXECVE" then {
         # Enhanced EXECVE command reconstruction with extended arguments
-        set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a6 = regex_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a7 = regex_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a8 = regex_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a9 = regex_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a0 = re_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a1 = re_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a2 = re_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a3 = re_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a4 = re_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a5 = re_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a6 = re_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a7 = re_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a8 = re_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a9 = re_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
         
         # Build complete command line with all arguments
         set \$.full_command = \$.a0;
@@ -790,6 +809,11 @@ EOF
 # ===============================================================================
 
 restart_services() {
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY RUN: Skipping service restarts."
+        return
+    fi
+
     log "INFO" "Servisler yeniden başlatılıyor..."
     
     # Servisleri enable et
@@ -887,7 +911,8 @@ run_validation_tests() {
     fi
     
     # Yerel syslog testi
-    local test_message="QRadar Ubuntu Universal Installer test $(date '+%Y%m%d%H%M%S')"
+    local test_message
+test_message="QRadar Ubuntu Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
     
@@ -1043,6 +1068,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --minimal)
             USE_MINIMAL_RULES=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         -h|--help)

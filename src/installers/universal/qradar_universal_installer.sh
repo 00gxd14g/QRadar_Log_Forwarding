@@ -31,18 +31,21 @@
 # Sürüm: 4.0.0 - Universal Edition
 # ===============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 # ===============================================================================
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
 readonly SCRIPT_VERSION="4.0.0-universal"
 readonly LOG_FILE="/var/log/qradar_universal_setup.log"
 
 # Script directory
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 
 # Installer paths
 readonly UBUNTU_INSTALLER="$SCRIPT_DIR/../ubuntu/qradar_ubuntu_installer.sh"
@@ -58,6 +61,7 @@ INSTALLER_PATH=""
 QRADAR_IP=""
 QRADAR_PORT=""
 USE_MINIMAL_RULES=false
+DRY_RUN=false
 INSTALLER_ARGS=""
 
 # ===============================================================================
@@ -186,8 +190,13 @@ run_specific_installer() {
     
     # Build arguments for the specific installer
     if [[ "$USE_MINIMAL_RULES" == true ]]; then
-        INSTALLER_ARGS="--minimal"
+        INSTALLER_ARGS="$INSTALLER_ARGS --minimal"
         log "INFO" "Minimal kurallar modu aktif edildi"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        INSTALLER_ARGS="$INSTALLER_ARGS --dry-run"
+        log "INFO" "Dry run modu aktif edildi"
     fi
 
     # Specific installer'ı çalıştır
@@ -278,6 +287,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --minimal)
             USE_MINIMAL_RULES=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         -h|--help)

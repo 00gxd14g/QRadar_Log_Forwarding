@@ -32,16 +32,21 @@
 # Sürüm: 4.0.0 - Universal RHEL Edition
 # ===============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 # ===============================================================================
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
+readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-rhel-universal"
-readonly LOG_FILE="/var/log/qradar_rhel_setup.log"
-readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly LOG_FILE="qradar_rhel_setup.log"
+BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly BACKUP_DIR
 
 # Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
@@ -64,6 +69,8 @@ HAS_FIREWALLD=false
 QRADAR_IP=""
 QRADAR_PORT=""
 USE_MINIMAL_RULES=false
+OPEN_PORT=false
+DRY_RUN=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -144,11 +151,24 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_file
+backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
         log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
     fi
+}
+
+# Proje kök dizinini bul
+project_root() {
+    local dir="$SCRIPT_DIR"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/src/installers/rhel/qradar_rhel_installer.sh" ]]; then
+            echo "$dir"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
 }
 
 # ===============================================================================
@@ -346,7 +366,7 @@ deploy_execve_parser() {
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-QRadar Universal RHEL Family EXECVE Parser v4.0.0
+QRadar Universal RHEL Family EXECVE Parser v4.0.1
 
 Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
 tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
@@ -358,6 +378,7 @@ import sys
 import re
 import socket
 import signal
+import time
 from datetime import datetime
 
 class RHELExecveParser:
@@ -401,7 +422,7 @@ class RHELExecveParser:
             cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
             
             # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
+            processed_line = f'{cleaned_line} cmd="{combined_command}"'
             return processed_line
             
         except Exception as e:
@@ -410,23 +431,41 @@ class RHELExecveParser:
     
     def run(self):
         """Ana işlem döngüsü"""
-        try:
-            for line in sys.stdin:
-                line = line.strip()
-                if line:
-                    processed_line = self.process_execve_line(line)
-                    if processed_line is not None:
-                        print(processed_line, flush=True)
-        except (KeyboardInterrupt, BrokenPipeError):
-            pass
-        except Exception:
-            sys.exit(1)
+        retry_delay = 1
+        max_delay = 60
+        while True:
+            try:
+                for line in sys.stdin:
+                    line = line.strip()
+                    if line:
+                        processed_line = self.process_execve_line(line)
+                        if processed_line is not None:
+                            print(processed_line, flush=True)
+                break  # stdin kapanırsa döngüden çık
+            except BrokenPipeError:
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
+            except (KeyboardInterrupt, SystemExit):
+                break
+            except Exception:
+                sys.exit(1)
+
+    def run_test(self):
+        """Test a sample EXECVE line."""
+        test_line = 'type=EXECVE msg=audit(1678886400.123:456): argc=3 a0="sudo" a1="ls" a2="-la"'
+        expected_cmd = 'sudo ls -la'
+        processed = self.process_execve_line(test_line)
+        return processed and f'cmd="{expected_cmd}"' in processed
 
 if __name__ == "__main__":
     parser = RHELExecveParser()
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        success = parser.run()
-        sys.exit(0 if success else 1)
+        if parser.run_test():
+            print("Test PASSED")
+            sys.exit(0)
+        else:
+            print("Test FAILED")
+            sys.exit(1)
     else:
         parser.run()
 EOF
@@ -750,7 +789,7 @@ configure_selinux() {
 # ===============================================================================
 
 configure_firewall() {
-    if [[ "$HAS_FIREWALLD" == true ]]; then
+    if [[ "$HAS_FIREWALLD" == true ]] && [[ "$OPEN_PORT" == true ]]; then
         log "INFO" "Firewalld yapılandırması uygulanıyor..."
         
         # QRadar portu için giden bağlantılara izin ver
@@ -763,7 +802,7 @@ configure_firewall() {
         
         log "INFO" "Firewalld yapılandırması tamamlandı"
     else
-        log "INFO" "Firewalld devre dışı, yapılandırma atlanıyor"
+        log "INFO" "Firewalld yapılandırması atlanıyor"
     fi
 }
 
@@ -780,7 +819,7 @@ configure_rsyslog() {
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
         -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
-        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
+        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog RHEL ailesi Universal yapılandırması tamamlandı"
@@ -791,10 +830,20 @@ configure_rsyslog() {
 # ===============================================================================
 
 restart_services() {
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY RUN: Skipping service restarts."
+        return
+    fi
+
     log "INFO" "RHEL ailesi servisleri yeniden başlatılıyor..."
     
     # Servisleri enable et
     safe_execute "auditd servisini enable etme" systemctl enable auditd
+    if ! rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
+        error_exit "Rsyslog yapılandırma dosyası $RSYSLOG_QRADAR_CONF geçersiz."
+    fi
+    success "Rsyslog yapılandırması doğrulandı."
+
     safe_execute "rsyslog servisini enable etme" systemctl enable rsyslog
     
     # Servisleri durdur
@@ -837,17 +886,25 @@ load_audit_rules() {
     # Method 3: Satır satır yükleme (fallback)
     log "INFO" "Fallback: Kurallar satır satır yükleniyor..."
     local rules_loaded=0
+    local has_e_flag=false
     while IFS= read -r line; do
         if [[ -n "$line" ]] && [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ "$line" =~ ^[[:space:]]*- ]]; then
             if [[ "$line" == "-e 2" ]]; then
+                has_e_flag=true
                 continue  # İmmutable flag'i son olarak uygula
             fi
-            if auditctl "$line" >> "$LOG_FILE" 2>&1; then
+            read -ra rule_parts <<< "$line"
+            if auditctl "${rule_parts[@]}" >> "$LOG_FILE" 2>&1; then
                 ((rules_loaded++))
             fi
         fi
     done < "$AUDIT_RULES_FILE"
     
+    if [[ "$has_e_flag" == true ]]; then
+        log "INFO" "Applying immutable flag (-e 2)"
+        auditctl -e 2 >> "$LOG_FILE" 2>&1
+    fi
+
     if [[ $rules_loaded -gt 0 ]]; then
         success "$rules_loaded audit kuralı satır satır yüklendi"
     else
@@ -888,7 +945,8 @@ run_validation_tests() {
     fi
     
     # Yerel syslog testi
-    local test_message="QRadar RHEL Universal Installer test $(date '+%Y%m%d%H%M%S')"
+    local test_message
+test_message="QRadar RHEL Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
     
@@ -1085,18 +1143,27 @@ while [[ $# -gt 0 ]]; do
             USE_MINIMAL_RULES=true
             shift
             ;;
+        --open-port)
+            OPEN_PORT=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         -h|--help)
             echo "QRadar Universal RHEL Family Installer v$SCRIPT_VERSION"
             echo ""
             echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --minimal  Use minimal audit rules for EPS optimization"
-            echo "  --help     Show this help message"
+            echo "  --minimal    Use minimal audit rules for EPS optimization"
+            echo "  --open-port  Open the QRadar port in firewalld"
+            echo "  --help       Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0 192.168.1.100 514"
-            echo "  $0 192.168.1.100 514 --minimal"
+            echo "  $0 192.168.1.100 514 --minimal --open-port"
             exit 0
             ;;
         -*)

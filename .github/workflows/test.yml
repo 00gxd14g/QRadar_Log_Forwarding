@@ -8,8 +8,12 @@ on:
 
 jobs:
   test:
-    name: Test Scripts
+    name: Test Scripts on ${{ matrix.os }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+        python-version: [3.8, 3.9, 3.10]
     
     steps:
     - name: Checkout code
@@ -137,16 +141,17 @@ jobs:
         echo "🐚 Shell script analysis:"
         shellcheck setup_qradar_logging.sh || echo "⚠️ ShellCheck not available or found issues"
     
-    - name: Test Summary
-      if: always()
+    - name: Run tests in Docker
       run: |
-        echo "📋 Test Summary:"
-        echo "✅ Bash syntax validation"
-        echo "✅ Python syntax validation"  
-        echo "✅ Python functionality tests"
-        echo "✅ File structure validation"
-        echo "✅ Documentation validation"
-        echo "✅ Security checks"
-        echo "✅ Code quality analysis"
-        echo ""
-        echo "🎉 All tests completed!"
+        docker run --rm -v ${{ github.workspace }}:/app -w /app rockylinux:8 bash -c "
+          yum install -y rsyslog audit &&
+          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
+          auditctl -R /app/src/installers/rhel/99-qradar.rules"
+        docker run --rm -v ${{ github.workspace }}:/app -w /app rockylinux:9 bash -c "
+          yum install -y rsyslog audit &&
+          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
+          auditctl -R /app/src/installers/rhel/99-qradar.rules"
+        docker run --rm -v ${{ github.workspace }}:/app -w /app amazonlinux:2 bash -c "
+          yum install -y rsyslog audit &&
+          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
+          auditctl -R /app/src/installers/rhel/99-qradar.rules"

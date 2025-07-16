@@ -1,5 +1,26 @@
 # Changelog
 
+## v4.0.1 - 2025-07-16
+
+### Fixed
+- Replaced `regex_extract` with `re_extract` in all installer scripts.
+- Fixed unbalanced conditional blocks in `qradar_rhel_installer.sh`.
+- Added `SCRIPT_DIR` variable and used it to reference universal templates.
+- Added `rsyslogd -N1` verification before enabling the service.
+- Removed unsafe firewall rule and added a flag to control it.
+- Fixed audit fallback loader to parse rules into an array.
+- Fixed Python parser defects.
+- Added global error trap to all installer scripts.
+- Camel-cased queue parameters in `99-qradar.conf`.
+- Added `set -Eeuo pipefail` and an `ERR` trap to all Bash files.
+- Replaced relative template inclusions with absolute paths.
+- Added a `project_root()` helper function to all installer scripts.
+- Added ShellCheck, Black, and Ruff to the GitHub Actions pipeline.
+- Provided a pytest-based harness for the `execve_parser.py` helper.
+- Added a matrix build for RHEL 7, 8, 9 and Amazon Linux 2.
+- Used the `${var:-N/A}` syntax for optional rsyslog fields.
+- Added `RHEL_COMPLIANCE_NOTES.md` to document the changes.
+
 All notable changes to the QRadar Log Forwarding project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

@@ -62,22 +62,21 @@ class ExecveParser:
     def _get_user_info(self, line: str) -> Dict[str, str]:
         """Extracts and resolves user/group IDs from the log line."""
         info = {}
-        matches = self.user_pattern.findall(line)
-        for key, value in matches:
-            try:
-                num_id = int(value)
+        for key in ['auid', 'uid', 'gid']:
+            match = re.search(rf'\b{key}=(\d+)', line)
+            if match:
+                num_id = int(match.group(1))
                 if num_id == 4294967295:  # Unset ID (-1)
                     continue
-                
-                if 'uid' in key:
-                    user_name = pwd.getpwuid(num_id).pw_name
-                    info[f'{key}_name'] = user_name
-                elif 'gid' in key:
-                    group_name = grp.getgrgid(num_id).gr_name
-                    info[f'{key}_name'] = group_name
-            except (KeyError, ValueError):
-                # Ignore if ID does not exist
-                pass
+                try:
+                    if 'uid' in key:
+                        user_name = pwd.getpwuid(num_id).pw_name
+                        info[f'{key}_name'] = user_name
+                    elif 'gid' in key:
+                        group_name = grp.getgrgid(num_id).gr_name
+                        info[f'{key}_name'] = group_name
+                except (KeyError, ValueError):
+                    pass  # Ignore if ID does not exist
         return info
 
     def _analyze_mitre_techniques(self, command: str) -> List[str]:
