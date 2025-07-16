@@ -79,16 +79,6 @@ detect_init() {
     [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
 }
 
-start_service() {
-    local svc="$1"
-    if detect_init; then
-        systemctl start "$svc"
-    else
-        warn "Init sistemi systemd değil; $svc başlatma atlandı"
-        return 0
-    fi
-}
-
 # Geliştirilmiş logging fonksiyonu
 log() {
     local level="${1:-INFO}"
@@ -764,7 +754,7 @@ restart_services() {
     sleep 3
     
     # Auditd'yi başlat
-    retry_operation "auditd servisini başlatma" start_service "auditd"
+    retry_operation "auditd servisini başlatma" systemctl start "auditd"
     
     sleep 2
     
@@ -772,7 +762,7 @@ restart_services() {
     load_audit_rules
     
     # Rsyslog'u başlat
-    retry_operation "rsyslog servisini başlatma" start_service "rsyslog"
+    retry_operation "rsyslog servisini başlatma" systemctl start "rsyslog"
     
     success "Tüm RHEL ailesi servisleri başarıyla yapılandırıldı ve başlatıldı"
 }
@@ -842,7 +832,7 @@ run_validation_tests() {
             success "$service servisi çalışıyor"
         else
             warn "$service servisi çalışmıyor - başlatmaya çalışılıyor..."
-            safe_execute "$service servisini başlatma" start_service "$service"
+            safe_execute "$service servisini başlatma" systemctl start "$service"
         fi
     done
     
