@@ -233,16 +233,18 @@ Copy and paste the following configuration into the file, replacing `<QRADAR_IP>
 
 ```
 # QRadar Log Forwarding Configuration
-module(load="omprog")
+module(load="omprogram")
 
 template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
 if $syslogfacility-text == 'local3' then {
-    action(
-        type="omprog"
-        binary="/usr/local/bin/qradar_execve_parser.py"
-        template="RSYSLOG_TraditionalFileFormat"
-    )
+    if $msg contains 'type=EXECVE' then {
+        action(
+            type="omprogram"
+            binary="/usr/local/bin/qradar_execve_parser.py"
+            template="RSYSLOG_TraditionalFileFormat"
+        )
+    }
     action(
         type="omfwd"
         target="<QRADAR_IP>"
@@ -506,16 +508,18 @@ Copy and paste the following configuration into the file, replacing `<QRADAR_IP>
 
 ```
 # QRadar Log Forwarding Configuration
-module(load="omprog")
+module(load="omprogram")
 
 template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
 if $syslogfacility-text == 'local3' then {
-    action(
-        type="omprog"
-        binary="/usr/local/bin/qradar_execve_parser.py"
-        template="RSYSLOG_TraditionalFileFormat"
-    )
+    if $msg contains 'type=EXECVE' then {
+        action(
+            type="omprogram"
+            binary="/usr/local/bin/qradar_execve_parser.py"
+            template="RSYSLOG_TraditionalFileFormat"
+        )
+    }
     action(
         type="omfwd"
         target="<QRADAR_IP>"

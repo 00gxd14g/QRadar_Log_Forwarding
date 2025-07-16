@@ -365,44 +365,15 @@ class DebianExecveParser:
             # Hata durumunda orijinal satırı döndür
             return line
     
-    def send_to_qradar(self, message, qradar_ip, qradar_port):
-        """İşlenmiş mesajı QRadar'a TCP ile gönder"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            sock.connect((qradar_ip, int(qradar_port)))
-            sock.send((message + "\n").encode('utf-8'))
-            sock.close()
-            return True
-        except Exception:
-            return False
-    
     def run(self):
         """Ana işlem döngüsü"""
-        # Test modu kontrolü
-        if len(sys.argv) > 1 and sys.argv[1] == "--test":
-            test_line = 'audit(1234567890.123:456): type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="nmap" a1="-sS" a2="192.168.1.0/24"'
-            result = self.process_execve_line(test_line)
-            if result and "DEBIAN_PROCESSED" in result and "T1046" in result:
-                print(f"{self.system_type} EXECVE parser test başarılı")
-                return True
-            else:
-                print(f"{self.system_type} EXECVE parser test başarısız")
-                return False
-        
-        # QRadar bağlantı bilgilerini al
-        qradar_ip = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-        qradar_port = sys.argv[2] if len(sys.argv) > 2 else "514"
-        
         try:
             for line in sys.stdin:
                 line = line.strip()
                 if line:
                     processed_line = self.process_execve_line(line)
                     if processed_line is not None:
-                        # QRadar'a göndermeyi dene, başarısız olursa stdout'a yaz
-                        if not self.send_to_qradar(processed_line, qradar_ip, qradar_port):
-                            print(processed_line, flush=True)
+                        print(processed_line, flush=True)
         except (KeyboardInterrupt, BrokenPipeError):
             pass
         except Exception:
@@ -731,6 +702,7 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
+        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
