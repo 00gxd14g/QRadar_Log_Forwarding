@@ -668,12 +668,7 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-<<<<<<< HEAD
-        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
-=======
-        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
->>>>>>> main
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
