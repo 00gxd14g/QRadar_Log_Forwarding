@@ -31,16 +31,21 @@
 # Sürüm: 4.0.0 - Universal Debian Edition
 # ===============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 # ===============================================================================
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-readonly SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_NAME
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
+readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-debian-universal"
-readonly LOG_FILE="/var/log/qradar_debian_setup.log"
-readonly BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly LOG_FILE="qradar_debian_setup.log"
+BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
+readonly BACKUP_DIR
 
 # Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
@@ -63,6 +68,7 @@ SYSLOG_FILE="/var/log/syslog"
 QRADAR_IP=""
 QRADAR_PORT=""
 USE_MINIMAL_RULES=false
+DRY_RUN=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -143,11 +149,24 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_file
+backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
         log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
     fi
+}
+
+# Proje kök dizinini bul
+project_root() {
+    local dir="$SCRIPT_DIR"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/src/installers/debian/qradar_debian_installer.sh" ]]; then
+            echo "$dir"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
 }
 
 # ===============================================================================
@@ -702,7 +721,6 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog Debian/Kali Universal yapılandırması tamamlandı"
@@ -713,6 +731,11 @@ configure_rsyslog() {
 # ===============================================================================
 
 restart_services() {
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY RUN: Skipping service restarts."
+        return
+    fi
+
     log "INFO" "Debian/Kali servisleri yeniden başlatılıyor..."
     
     # Servisleri enable et
@@ -810,7 +833,8 @@ run_validation_tests() {
     fi
     
     # Yerel syslog testi
-    local test_message="QRadar Debian/Kali Universal Installer test $(date '+%Y%m%d%H%M%S')"
+    local test_message
+test_message="QRadar Debian/Kali Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
     
@@ -983,6 +1007,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --minimal)
             USE_MINIMAL_RULES=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         -h|--help)
