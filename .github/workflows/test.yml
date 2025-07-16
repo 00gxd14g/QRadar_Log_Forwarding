@@ -70,7 +70,7 @@ jobs:
     needs: lint
     strategy:
       matrix:
-        distro: [debian:11, debian:10, kali-rolling]
+        distro: [debian:11, debian:10, kali/kali-rolling]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
