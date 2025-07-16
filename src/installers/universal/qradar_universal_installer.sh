@@ -57,6 +57,8 @@ INSTALLER_PATH=""
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
+USE_MINIMAL_RULES=false
+INSTALLER_ARGS=""
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -182,10 +184,17 @@ run_specific_installer() {
     
     show_banner
     
+    # Build arguments for the specific installer
+    if [[ "$USE_MINIMAL_RULES" == true ]]; then
+        INSTALLER_ARGS="--minimal"
+        log "INFO" "Minimal kurallar modu aktif edildi"
+    fi
+
     # Specific installer'ı çalıştır
-    log "INFO" "Çalıştırılıyor: $INSTALLER_PATH $QRADAR_IP $QRADAR_PORT"
+    log "INFO" "Çalıştırılıyor: $INSTALLER_PATH $QRADAR_IP $QRADAR_PORT $INSTALLER_ARGS"
     
-    if "$INSTALLER_PATH" "$QRADAR_IP" "$QRADAR_PORT"; then
+    # shellcheck disable=SC2086
+    if "$INSTALLER_PATH" "$QRADAR_IP" "$QRADAR_PORT" $INSTALLER_ARGS; then
         success "Dağıtıma özel installer başarıyla tamamlandı"
     else
         error_exit "Installer çalıştırma başarısız oldu"
@@ -264,50 +273,65 @@ main() {
 # SCRIPT ENTRY POINT
 # ===============================================================================
 
+# Argument parsing
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --minimal)
+            USE_MINIMAL_RULES=true
+            shift
+            ;;
+        -h|--help)
+            echo "QRadar Universal Log Forwarding Installer v$SCRIPT_VERSION"
+            echo ""
+            echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --minimal  Use minimal audit rules for EPS optimization"
+            echo "  --help     Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0 192.168.1.100 514"
+            echo "  $0 192.168.1.100 514 --minimal"
+            exit 0
+            ;;
+        -*)
+            error_exit "Unknown option: $1"
+            ;;
+        *)
+            if [[ -z "$QRADAR_IP" ]]; then
+                QRADAR_IP="$1"
+            elif [[ -z "$QRADAR_PORT" ]]; then
+                QRADAR_PORT="$1"
+            else
+                error_exit "Too many arguments"
+            fi
+            shift
+            ;;
+    esac
+done
+
 # Parametre doğrulama
-if [[ $# -ne 2 ]]; then
-    echo ""
-    echo "==============================================================================="
-    echo "                    QRadar Universal Log Forwarding Installer"
-    echo "                                 v$SCRIPT_VERSION"
-    echo "==============================================================================="
-    echo ""
-    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT>"
-    echo ""
-    echo "Örnek: $0 192.168.1.100 514"
-    echo ""
-    echo "Desteklenen Dağıtımlar:"
-    echo "  🐧 Ubuntu (16.04+)"
-    echo "  🐧 Debian (9+)"
-    echo "  🐧 RHEL/CentOS (7+)"
-    echo "  🐧 Rocky Linux (8+)"
-    echo "  🐧 AlmaLinux (8+)"
-    echo "  🐧 Oracle Linux (7+)"
-    echo "  🐧 Amazon Linux 2"
-    echo "  🐧 Kali Linux"
-    echo ""
-    echo "Bu universal installer, sisteminizi otomatik olarak tespit eder"
-    echo "ve uygun installer'ı çalıştırır."
-    echo ""
-    echo "==============================================================================="
+if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
+    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
+    echo "Örnek: $0 192.168.1.100 514 --minimal"
     exit 1
 fi
 
 # IP adresi format kontrolü
-if ! [[ "$1" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    error_exit "Geçersiz IP adresi formatı: $1"
+if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
 fi
 
 # Port numarası kontrolü
-if ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -lt 1 ]] || [[ "$2" -gt 65535 ]]; then
-    error_exit "Geçersiz port numarası: $2 (1-65535 arası olmalı)"
+if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
+    error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
 fi
 
-# Global değişkenleri ayarla
-QRADAR_IP="$1"
-QRADAR_PORT="$2"
-
 # Ana fonksiyonu çalıştır
-main
+if [[ "${1:-}" == "--test-run" ]]; then
+    main --test-run
+else
+    main
+fi
 
 exit 0
