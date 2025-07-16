@@ -27,7 +27,7 @@ jobs:
     - name: Test Bash Script Syntax
       run: |
         echo "🔍 Testing Bash script syntax..."
-        bash -n setup_qradar_logging.sh
+        bash -n src/installers/universal/qradar_universal_installer.sh
         echo "✅ Bash script syntax check passed"
     
     - name: Test Python Script Syntax
@@ -39,7 +39,7 @@ jobs:
     - name: Run Python Script Tests
       run: |
         echo "🧪 Running Python script functionality tests..."
-        python3 concat_execve.py --test
+        pytest tests/
         echo "✅ Python script functionality tests passed"
     
     - name: Validate File Structure
@@ -48,11 +48,11 @@ jobs:
         
         # Check required files exist
         files=(
-          "setup_qradar_logging.sh"
-          "concat_execve.py"
-          "README.md"
-          "CHANGELOG.md"
-          "LICENSE"
+          "src/installers/universal/qradar_universal_installer.sh"
+          "src/helpers/execve_parser.py"
+          "docs/README.md"
+          "docs/CHANGELOG.md"
+          "docs/LICENSE"
           ".gitignore"
         )
         
@@ -70,6 +70,13 @@ jobs:
           echo "✅ setup_qradar_logging.sh is executable"
         else
           echo "❌ setup_qradar_logging.sh is not executable"
+          exit 1
+        fi
+
+        if [[ -x "src/helpers/execve_parser.py" ]]; then
+          echo "✅ src/helpers/execve_parser.py is executable"
+        else
+          echo "❌ src/helpers/execve_parser.py is not executable"
           exit 1
         fi
         
@@ -122,7 +129,7 @@ jobs:
         
         # Check file permissions in git (stored permissions)
         echo "📋 File permissions check:"
-        ls -la setup_qradar_logging.sh concat_execve.py
+        ls -la src/installers/universal/qradar_universal_installer.sh src/helpers/execve_parser.py
     
     - name: Code Quality
       run: |
