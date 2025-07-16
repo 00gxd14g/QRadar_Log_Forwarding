@@ -380,6 +380,12 @@ deploy_execve_parser() {
     else
         warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
     fi
+
+    # Deploy helper scripts
+    cp "$SCRIPT_DIR/../helpers/extract_audit_type.sh" "/usr/local/bin/extract_audit_type.sh"
+    chmod +x "/usr/local/bin/extract_audit_type.sh"
+    cp "$SCRIPT_DIR/../helpers/extract_audit_result.sh" "/usr/local/bin/extract_audit_result.sh"
+    chmod +x "/usr/local/bin/extract_audit_result.sh"
 }
 
 # ===============================================================================
@@ -391,239 +397,8 @@ configure_auditd() {
     
     backup_file "$AUDIT_RULES_FILE"
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")"
-    
-    if [[ "$USE_MINIMAL_RULES" == true ]]; then
-        log "INFO" "Minimal audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Minimal Audit Rules (EPS Optimized)
--D
--b 4096
--f 1
--r 50
--a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--w /var/log/auth.log -p wa -k authentication
--w /var/log/secure -p wa -k authentication
--w /usr/bin/sudo -p x -k privileged_commands
--w /bin/su -p x -k privileged_commands
--w /usr/bin/pkexec -p x -k privileged_commands
--w /etc/passwd -p wa -k identity_files
--w /etc/shadow -p wa -k identity_files
--w /etc/sudoers -p wa -k identity_files
--w /etc/sudoers.d/ -p wa -k identity_files
--w /usr/bin/systemctl -p x -k service_control
--w /sbin/service -p x -k service_control
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/reboot -p x -k system_reboot
--w /sbin/halt -p x -k system_shutdown
--a exclude,always -F msgtype=SERVICE_START
--a exclude,always -F msgtype=SERVICE_STOP
--a exclude,always -F msgtype=BPF
--a never,exit -F exe=/usr/bin/awk
--a never,exit -F exe=/usr/bin/grep
--a never,exit -F exe=/usr/bin/sed
--a never,exit -F exe=/bin/cat
--a never,exit -F exe=/bin/ls
--a never,exit -F dir=/tmp/
--a never,exit -F dir=/var/spool/
--a never,exit -F dir=/var/tmp/
-EOF
-    else
-        log "INFO" "Standard audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Universal RHEL Family Audit Rules v4.1.0
-# Comprehensive user behavior logging
 
-## Mevcut kuralları temizle ve yeniden başlat
--D
-
-## Buffer boyutu (enterprise ortamı için optimize edilmiş)
--b 16384
-
-## Hata modu (1 = hata mesajı yazdır, 0 = sessiz)
--f 1
-
-## Rate limiting (saniyede maksimum 150 olay)
--r 150
-
-## Hataları yoksay (kural yükleme sırasında)
--i
-
-#################################
-# Kimlik ve Erişim Yönetimi (MITRE T1003, T1078)
-#################################
--w /etc/passwd -p wa -k identity_changes
--w /etc/shadow -p wa -k credential_access
--w /etc/group -p wa -k identity_changes
--w /etc/gshadow -p wa -k credential_access
--w /etc/sudoers -p wa -k privilege_escalation
--w /etc/sudoers.d/ -p wa -k privilege_escalation
-
-#################################
-# Kimlik Doğrulama ve PAM (MITRE T1556)
-#################################
--w /etc/pam.d/ -p wa -k authentication_config
--w /etc/security/ -p wa -k security_config
--w /etc/login.defs -p wa -k login_config
-
-#################################
-# SSH Yapılandırması (MITRE T1021.004)
-#################################
--w /etc/ssh/sshd_config -p wa -k ssh_config
--w /etc/ssh/ssh_config -p wa -k ssh_config
--w /root/.ssh/ -p wa -k ssh_keys
--w /home/*/.ssh/ -p wa -k ssh_keys
-
-#################################
-# Komut Çalıştırma İzleme (MITRE T1059)
-#################################
-# Root komutları (güvenlik odaklı)
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
-
-# Kullanıcı komutları (sistem kullanıcıları hariç)
--a always,exit -F arch=b64 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
--a always,exit -F arch=b32 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
-
-# Yetki yükseltme komutları (MITRE T1548)
--w /bin/su -p x -k privilege_escalation
--w /usr/bin/sudo -p x -k privilege_escalation
--w /usr/bin/pkexec -p x -k privilege_escalation
-
-#################################
-# Ağ Yapılandırması (MITRE T1016)
-#################################
--a always,exit -F arch=b64 -S sethostname -S setdomainname -k network_config
--a always,exit -F arch=b32 -S sethostname -S setdomainname -k network_config
--w /etc/hosts -p wa -k network_config
--w /etc/resolv.conf -p wa -k network_config
--w /etc/hostname -p wa -k network_config
-
-# RHEL network configuration
--w /etc/sysconfig/network -p wa -k network_config
--w /etc/sysconfig/network-scripts/ -p wa -k network_config
--w /etc/NetworkManager/ -p wa -k network_config
-
-#################################
-# Sistem Durumu Değişiklikleri (MITRE T1529)
-#################################
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/poweroff -p x -k system_shutdown
--w /sbin/reboot -p x -k system_shutdown
--w /sbin/halt -p x -k system_shutdown
-
-#################################
-# Systemd ve Service Yönetimi (MITRE T1543)
-#################################
--w /usr/bin/systemctl -p x -k service_management
--w /sbin/service -p x -k service_management
--w /sbin/chkconfig -p x -k service_management
-
-#################################
-# Dosya İzinleri ve Sahiplik (MITRE T1222)
-#################################
--a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b64 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
--a always,exit -F arch=b32 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
-
-#################################
-# Ağ Araçları (MITRE T1105, T1071)
-#################################
--w /usr/bin/wget -p x -k network_tools
--w /usr/bin/curl -p x -k network_tools
--w /bin/nc -p x -k network_tools
--w /usr/bin/ncat -p x -k network_tools
--w /usr/bin/netcat -p x -k network_tools
--w /usr/bin/socat -p x -k network_tools
-
-#################################
-# Uzaktan Erişim Araçları (MITRE T1021)
-#################################
--w /usr/bin/ssh -p x -k remote_access
--w /usr/bin/scp -p x -k remote_access
--w /usr/bin/sftp -p x -k remote_access
--w /usr/bin/rsync -p x -k remote_access
-
-#################################
-# Sistem Keşfi (MITRE T1082, T1087)
-#################################
--w /usr/bin/whoami -p x -k system_discovery
--w /usr/bin/id -p x -k system_discovery
--w /usr/bin/w -p x -k system_discovery
--w /usr/bin/who -p x -k system_discovery
--w /usr/bin/last -p x -k system_discovery
--w /usr/bin/lastlog -p x -k system_discovery
-
-#################################
-# Cron Jobs ve Zamanlama (MITRE T1053)
-#################################
--w /etc/cron.d/ -p wa -k scheduled_tasks
--w /etc/cron.daily/ -p wa -k scheduled_tasks
--w /etc/cron.hourly/ -p wa -k scheduled_tasks
--w /etc/cron.monthly/ -p wa -k scheduled_tasks
--w /etc/cron.weekly/ -p wa -k scheduled_tasks
--w /var/spool/cron/ -p wa -k scheduled_tasks
--w /etc/crontab -p wa -k scheduled_tasks
-
-#################################
-# Systemd Servisleri (MITRE T1543.002)
-#################################
--w /etc/systemd/system/ -p wa -k systemd_services
--w /lib/systemd/system/ -p wa -k systemd_services
--w /usr/lib/systemd/system/ -p wa -k systemd_services
-
-#################################
-# Kernel Modülleri (MITRE T1547.006)
-#################################
--a always,exit -F arch=b64 -S init_module -S delete_module -k kernel_modules
--a always,exit -F arch=b32 -S init_module -S delete_module -k kernel_modules
--w /sbin/insmod -p x -k kernel_modules
--w /sbin/rmmod -p x -k kernel_modules
--w /sbin/modprobe -p x -k kernel_modules
-
-#################################
-# SELinux Yapılandırması (MITRE T1562.002)
-#################################
--w /etc/selinux/config -p wa -k selinux_config
--w /usr/sbin/setenforce -p x -k selinux_enforcement
--w /usr/sbin/setsebool -p x -k selinux_booleans
-
-#################################
-# Firewall Yapılandırması (MITRE T1562.004)
-#################################
--w /usr/bin/firewall-cmd -p x -k firewall_config
--w /sbin/iptables -p x -k firewall_config
--w /sbin/ip6tables -p x -k firewall_config
-
-#################################
-# Package Management (MITRE T1072)
-#################################
--w /usr/bin/yum -p x -k package_management
--w /usr/bin/dnf -p x -k package_management
--w /bin/rpm -p x -k package_management
-
-#################################
-# Log Dosyaları (MITRE T1070.002)
-#################################
--w /var/log/messages -p wa -k log_modification
--w /var/log/secure -p wa -k log_modification
--w /var/log/audit/ -p wa -k audit_log_modification
--w /var/log/maillog -p wa -k log_modification
-
-#################################
-# Audit Sistemi Koruması
-#################################
--w /etc/audit/ -p wa -k audit_config
--w /sbin/auditctl -p x -k audit_tools
--w /sbin/auditd -p x -k audit_tools
-
-# Kuralları değiştirilemez yap (yüksek güvenlik ortamları için)
-# -e 2
-EOF
-    fi
+    cp "$SCRIPT_DIR/../universal/audit.rules" "$AUDIT_RULES_FILE"
     
     chmod 640 "$AUDIT_RULES_FILE"
     success "RHEL ailesi Universal audit kuralları yapılandırıldı"
@@ -713,16 +488,29 @@ configure_firewall() {
 
 configure_rsyslog() {
     log "INFO" "RHEL ailesi için rsyslog QRadar iletimi yapılandırılıyor..."
-    
+
     backup_file "$RSYSLOG_QRADAR_CONF"
+
+    cp "$SCRIPT_DIR/../universal/99-qradar.conf" "$RSYSLOG_QRADAR_CONF"
     
     # shellcheck source=../universal/99-qradar.conf
-    sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
+    sed -i -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
-        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
-    
+        "$RSYSLOG_QRADAR_CONF"
+
     chmod 644 "$RSYSLOG_QRADAR_CONF"
+
+    # Copy rsyslog.conf
+    backup_file "/etc/rsyslog.conf"
+    cp "$SCRIPT_DIR/../universal/rsyslog.conf" "/etc/rsyslog.conf"
+    chmod 644 "/etc/rsyslog.conf"
+
+    # Copy ignore_programs.json
+    mkdir -p "/etc/rsyslog.d"
+    backup_file "/etc/rsyslog.d/ignore_programs.json"
+    cp "$SCRIPT_DIR/../universal/ignore_programs.json" "/etc/rsyslog.d/ignore_programs.json"
+    chmod 644 "/etc/rsyslog.d/ignore_programs.json"
+
     success "Rsyslog RHEL ailesi Universal yapılandırması tamamlandı"
 }
 
