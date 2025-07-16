@@ -11,7 +11,7 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
-- **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
+- **Command Concatenation**: `rsyslog` now handles EXECVE command argument concatenation.
 - **RHEL Compatibility**: Enhanced RHEL 7/8/9 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
@@ -40,7 +40,6 @@ The script automatically installs required packages:
 - `auditd` - Linux audit framework
 - `audispd-plugins` - Audit dispatcher plugins (Debian/Ubuntu)
 - `rsyslog` - System logging daemon
-- `python3` - Required for command concatenation script
 
 ## 🛠️ Installation & Usage
 
@@ -87,7 +86,6 @@ After installation, configuration files are located at:
 /etc/audit/rules.d/99-qradar.rules       # Audit rules
 /etc/audit/plugins.d/syslog.conf         # Audisp-syslog plugin config
 /etc/rsyslog.d/99-qradar.conf            # Rsyslog QRadar forwarding config
-/usr/local/bin/qradar_execve_parser.py   # Command concatenation script
 /var/log/qradar_*.log                    # Installation logs
 /etc/qradar_backup_YYYYMMDD_HHMMSS/      # Configuration backups
 ```
@@ -111,12 +109,6 @@ sudo touch /etc/passwd  # Triggers identity_changes audit rule
 sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
 ```
 
-#### Check Command Concatenation
-```bash
-# Test the Python script directly
-echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/qradar_execve_parser.py
-```
-
 ## 🛡️ Security Considerations
 
 ### SELinux Configuration
@@ -135,7 +127,7 @@ On systems with firewalld active, the script:
 All configuration files are created with appropriate permissions:
 - Audit rules: `640` (root:root)
 - Plugin configurations: `640` (root:root)
-- Python script: `755` (executable)
+- Rsyslog configuration: `644` (root:root)
 - Log files: `640` (root:root)
 
 ## 📊 Log Format & Processing
@@ -192,15 +184,6 @@ sudo ausearch -m avc -ts recent
 
 # Check SELinux booleans
 sudo getsebool -a | grep rsyslog
-```
-
-#### Python Script Issues
-```bash
-# Test script manually
-sudo python3 /usr/local/bin/qradar_execve_parser.py
-
-# Check script permissions
-ls -la /usr/local/bin/qradar_execve_parser.py
 ```
 
 ### Log Files
