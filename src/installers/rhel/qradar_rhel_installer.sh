@@ -39,8 +39,6 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_NAME
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-rhel-universal"
@@ -159,17 +157,6 @@ backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
     fi
 }
 
-# Proje kök dizinini bul
-project_root() {
-    local dir="$SCRIPT_DIR"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -f "$dir/src/installers/rhel/qradar_rhel_installer.sh" ]]; then
-            echo "$dir"
-            return
-        fi
-        dir="$(dirname "$dir")"
-    done
-}
 
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
@@ -367,7 +354,7 @@ deploy_execve_parser() {
     backup_file "$CONCAT_SCRIPT_PATH"
     
     local parser_source_path
-    parser_source_path="$(project_root)/src/helpers/execve_parser.py"
+    parser_source_path="$SCRIPT_DIR/../helpers/execve_parser.py"
 
     if [[ ! -f "$parser_source_path" ]]; then
         error_exit "EXECVE parser source not found at: $parser_source_path"
