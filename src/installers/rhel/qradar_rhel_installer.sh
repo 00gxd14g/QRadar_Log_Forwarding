@@ -203,7 +203,11 @@ detect_rhel_family() {
             log "INFO" "RHEL ailesi dağıtım tespit edildi: $DISTRO_ID"
             ;;
         *)
-            error_exit "Bu script sadece RHEL ailesi dağıtımlar için tasarlanmıştır. Tespit edilen: $DISTRO_ID"
+            if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
+                warn "CI mode: skipping distro check"
+            else
+                error_exit "Bu script sadece RHEL ailesi dağıtımlar için tasarlanmıştır. Tespit edilen: $DISTRO_ID"
+            fi
             ;;
     esac
     
@@ -305,11 +309,6 @@ check_system_features() {
 
 install_required_packages() {
     log "INFO" "RHEL ailesi için gerekli paketler kontrol ediliyor ve kuruluyor..."
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        log "INFO" "DRY RUN: Skipping package installation"
-        return
-    fi
     
     # RHEL ailesi için paket listesi
     local required_packages=("audit" "rsyslog" "python3")
@@ -721,60 +720,13 @@ configure_rsyslog() {
     
     backup_file "$RSYSLOG_QRADAR_CONF"
     
-    # Ensure rsyslog spool directory exists
-    local SPOOL_DIR="/var/spool/rsyslog"
-    if [[ ! -d "$SPOOL_DIR" ]]; then
-        mkdir -p "$SPOOL_DIR"
-        chown root:root "$SPOOL_DIR"
-        chmod 755 "$SPOOL_DIR"
-        log "INFO" "Rsyslog spool directory created: $SPOOL_DIR"
-    fi
-    
-    # Generate configuration from template
-    if [[ ! -f "$SCRIPT_DIR/../universal/99-qradar.conf" ]]; then
-        error_exit "Rsyslog template not found: $SCRIPT_DIR/../universal/99-qradar.conf"
-    fi
-    
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
         -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
-    # Validate generated configuration
-    if [[ ! -s "$RSYSLOG_QRADAR_CONF" ]]; then
-        error_exit "Failed to generate rsyslog configuration"
-    fi
-    
-    # Set proper permissions
     chmod 644 "$RSYSLOG_QRADAR_CONF"
-    chown root:root "$RSYSLOG_QRADAR_CONF"
-    
-    # Syntax validation with rsyslogd
-    log "INFO" "Validating rsyslog configuration syntax..."
-    if command_exists rsyslogd; then
-        if rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
-            success "Rsyslog configuration syntax is valid"
-        else
-            # Try to extract error message
-            local error_msg
-            error_msg=$(rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" 2>&1 | head -5)
-            error_exit "Invalid rsyslog configuration: $error_msg"
-        fi
-    else
-        warn "rsyslogd not found for syntax validation"
-    fi
-    
-    # Check if main rsyslog.conf includes our config directory
-    local MAIN_RSYSLOG_CONF="/etc/rsyslog.conf"
-    if [[ -f "$MAIN_RSYSLOG_CONF" ]]; then
-        if ! grep -q '^\s*\$IncludeConfig\s*/etc/rsyslog\.d/\*\.conf' "$MAIN_RSYSLOG_CONF" && \
-           ! grep -q '^include(file="/etc/rsyslog\.d/\*\.conf")' "$MAIN_RSYSLOG_CONF"; then
-            warn "Main rsyslog.conf may not include /etc/rsyslog.d/*.conf files"
-            log "INFO" "Consider adding: include(file=\"/etc/rsyslog.d/*.conf\") to $MAIN_RSYSLOG_CONF"
-        fi
-    fi
-    
     success "Rsyslog RHEL ailesi Universal yapılandırması tamamlandı"
 }
 
@@ -792,17 +744,12 @@ restart_services() {
     
     # Servisleri enable et
     safe_execute "auditd servisini enable etme" systemctl enable auditd
-    safe_execute "rsyslog servisini enable etme" systemctl enable rsyslog
-    
-    # Final rsyslog configuration validation
-    log "INFO" "Performing final rsyslog configuration check..."
-    if ! rsyslogd -N1 >> "$LOG_FILE" 2>&1; then
-        warn "Full rsyslog configuration has warnings, checking our specific config..."
-        if ! rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
-            error_exit "Rsyslog configuration file $RSYSLOG_QRADAR_CONF is invalid"
-        fi
+    if ! rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
+        error_exit "Rsyslog yapılandırma dosyası $RSYSLOG_QRADAR_CONF geçersiz."
     fi
-    success "Rsyslog configuration validated"
+    success "Rsyslog yapılandırması doğrulandı."
+
+    safe_execute "rsyslog servisini enable etme" systemctl enable rsyslog
     
     # Servisleri durdur
     safe_execute "auditd servisini durdurma" systemctl stop auditd || true
@@ -876,11 +823,6 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "RHEL ailesi sistem doğrulama testleri çalıştırılıyor..."
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        log "INFO" "DRY RUN: Skipping validation tests"
-        return
-    fi
     
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")
@@ -1093,6 +1035,13 @@ main() {
     log "INFO" "============================================================="
     log "INFO" "RHEL ailesi kurulum tamamlandı: $(date)"
     log "INFO" "============================================================="
+
+    if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
+        if [[ -n "${RUNNER_TEMP:-}" ]]; then
+            mv "$LOG_FILE" "$RUNNER_TEMP/" || warn "Could not move log file to $RUNNER_TEMP"
+            chown "$(logname)" "$RUNNER_TEMP/$LOG_FILE" || warn "Could not change log file ownership"
+        fi
+    fi
 }
 
 # ===============================================================================

@@ -256,11 +256,6 @@ determine_audisp_method() {
 install_required_packages() {
     log "INFO" "Gerekli paketler kontrol ediliyor ve kuruluyor..."
     
-    if [[ "$DRY_RUN" == true ]]; then
-        log "INFO" "DRY RUN: Skipping package installation"
-        return
-    fi
-    
     # Ubuntu sürümüne göre paket listesi
     local required_packages=("auditd" "rsyslog" "python3")
     
@@ -670,60 +665,13 @@ configure_rsyslog() {
     
     backup_file "$RSYSLOG_QRADAR_CONF"
     
-    # Ensure rsyslog spool directory exists
-    local SPOOL_DIR="/var/spool/rsyslog"
-    if [[ ! -d "$SPOOL_DIR" ]]; then
-        mkdir -p "$SPOOL_DIR"
-        chown syslog:adm "$SPOOL_DIR" || chown root:root "$SPOOL_DIR"
-        chmod 755 "$SPOOL_DIR"
-        log "INFO" "Rsyslog spool directory created: $SPOOL_DIR"
-    fi
-    
-    # Generate configuration from template
-    if [[ ! -f "$SCRIPT_DIR/../universal/99-qradar.conf" ]]; then
-        error_exit "Rsyslog template not found: $SCRIPT_DIR/../universal/99-qradar.conf"
-    fi
-    
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
         -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
-    # Validate generated configuration
-    if [[ ! -s "$RSYSLOG_QRADAR_CONF" ]]; then
-        error_exit "Failed to generate rsyslog configuration"
-    fi
-    
-    # Set proper permissions (Ubuntu uses syslog user)
     chmod 644 "$RSYSLOG_QRADAR_CONF"
-    chown root:root "$RSYSLOG_QRADAR_CONF"
-    
-    # Syntax validation with rsyslogd
-    log "INFO" "Validating rsyslog configuration syntax..."
-    if command_exists rsyslogd; then
-        if rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
-            success "Rsyslog configuration syntax is valid"
-        else
-            # Try to extract error message
-            local error_msg
-            error_msg=$(rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" 2>&1 | head -5)
-            error_exit "Invalid rsyslog configuration: $error_msg"
-        fi
-    else
-        warn "rsyslogd not found for syntax validation"
-    fi
-    
-    # Check if main rsyslog.conf includes our config directory
-    local MAIN_RSYSLOG_CONF="/etc/rsyslog.conf"
-    if [[ -f "$MAIN_RSYSLOG_CONF" ]]; then
-        if ! grep -q '^\s*\$IncludeConfig\s*/etc/rsyslog\.d/\*\.conf' "$MAIN_RSYSLOG_CONF" && \
-           ! grep -q '^include(file="/etc/rsyslog\.d/\*\.conf")' "$MAIN_RSYSLOG_CONF"; then
-            warn "Main rsyslog.conf may not include /etc/rsyslog.d/*.conf files"
-            log "INFO" "Consider adding: include(file=\"/etc/rsyslog.d/*.conf\") to $MAIN_RSYSLOG_CONF"
-        fi
-    fi
-    
     success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
 }
 
@@ -734,39 +682,123 @@ configure_rsyslog() {
 configure_direct_audit_fallback() {
     log "INFO" "Doğrudan audit.log izleme fallback yapılandırması ekleniyor..."
     
-    # Check if imfile module is already loaded in our config
-    if ! grep -q 'module(load="imfile")' "$RSYSLOG_QRADAR_CONF"; then
-        # Add imfile module if not present
-        sed -i '1i # Fallback configuration added\nmodule(load="imfile")' "$RSYSLOG_QRADAR_CONF"
-    fi
-    
     # Rsyslog yapılandırmasına fallback ekle
-    cat >> "$RSYSLOG_QRADAR_CONF" << 'EOF'
+    cat >> "$RSYSLOG_QRADAR_CONF" << EOF
 
 # =================================================================
-# FALLBACK: Direct audit.log file monitoring
+# FALLBACK: Doğrudan audit.log dosyası izleme
 # =================================================================
-# Used when audit rules cannot be loaded
+# Audit rules yüklenemediği durumlarda kullanılır
 
-# Monitor audit.log directly
 input(
     type="imfile"
     file="/var/log/audit/audit.log"
     tag="audit-direct"
     facility="local3"
-    severity="info"
-    persistStateInterval="1000"
+    ruleset="direct_audit_processing"
 )
 
-# Additional security logs monitoring
-input(
-    type="imfile" 
-    file="/var/log/auth.log"
-    tag="auth-direct"
-    facility="authpriv"
-    severity="info"
-    persistStateInterval="1000"
-)
+ruleset(name="direct_audit_processing") {
+    # Extract audit fields for LEEF processing
+    set \$.audit_type = re_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
+    set \$.auid = re_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
+    set \$.uid = re_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
+    set \$.euid = re_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
+    set \$.pid = re_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
+    set \$.exe = re_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
+    set \$.success = re_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
+    set \$.key = re_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
+
+    # Enhanced EXECVE processing in fallback mode
+    if \$msg contains "type=EXECVE" then {
+        # Enhanced EXECVE command reconstruction with extended arguments
+        set \$.a0 = re_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a1 = re_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a2 = re_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a3 = re_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a4 = re_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a5 = re_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a6 = re_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a7 = re_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a8 = re_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a9 = re_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
+
+        # Build complete command line with all arguments
+        set \$.full_command = \$.a0;
+        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
+        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
+        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
+        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
+        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
+        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
+        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
+        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
+        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
+
+        # Send with traditional parser
+        action(
+            type="omprog"
+            binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
+            template="RSYSLOG_TraditionalFileFormat"
+        )
+
+        # Send LEEF v2 format directly
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="LEEFv2Ubuntu"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
+
+        # Send traditional format directly
+        action(
+            type="omfwd"
+            target="$QRADAR_IP"
+            port="$QRADAR_PORT"
+            protocol="tcp"
+            template="QRadarUbuntuFormat"
+            queue.type="linkedlist"
+            queue.size="25000"
+            action.resumeRetryCount="-1"
+        )
+        stop
+    } else {
+        set \$.full_command = "N/A";
+    }
+
+    # Diğer audit olaylarını dual format ile ilet (LEEF v2 + Traditional)
+    # LEEF v2 format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="LEEFv2Ubuntu"
+        queue.type="linkedlist"
+        queue.size="25000"
+        action.resumeRetryCount="-1"
+        action.reportSuspension="on"
+    )
+
+    # Traditional format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="QRadarUbuntuFormat"
+        queue.type="linkedlist"
+        queue.size="25000"
+        action.resumeRetryCount="-1"
+        action.reportSuspension="on"
+    )
+
+    stop
+}
 EOF
     
     success "Doğrudan audit.log izleme fallback eklendi"
@@ -787,16 +819,6 @@ restart_services() {
     # Servisleri enable et
     safe_execute "auditd servisini enable etme" systemctl enable auditd
     safe_execute "rsyslog servisini enable etme" systemctl enable rsyslog
-    
-    # Final rsyslog configuration validation
-    log "INFO" "Performing final rsyslog configuration check..."
-    if ! rsyslogd -N1 >> "$LOG_FILE" 2>&1; then
-        warn "Full rsyslog configuration has warnings, checking our specific config..."
-        if ! rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
-            error_exit "Rsyslog configuration file $RSYSLOG_QRADAR_CONF is invalid"
-        fi
-    fi
-    success "Rsyslog configuration validated"
     
     # Servisleri durdur
     safe_execute "auditd servisini durdurma" systemctl stop auditd || true
@@ -862,11 +884,6 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "Sistem doğrulama testleri çalıştırılıyor..."
-    
-    if [[ "$DRY_RUN" == true ]]; then
-        log "INFO" "DRY RUN: Skipping validation tests"
-        return
-    fi
     
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")

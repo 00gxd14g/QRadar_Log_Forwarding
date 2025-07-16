@@ -30,6 +30,14 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y shellcheck
 
+    - name: Make scripts executable
+      run: |
+        chmod +x src/installers/rhel/qradar_rhel_installer.sh
+        chmod +x src/installers/debian/qradar_debian_installer.sh
+        chmod +x src/installers/ubuntu/qradar_ubuntu_installer.sh
+        chmod +x src/installers/universal/qradar_universal_installer.sh
+        chmod +x src/helpers/execve_parser.py
+
     - name: Run Linters
       run: |
         black --check .
@@ -144,12 +152,12 @@ jobs:
     - name: Run installer in Docker
       strategy:
         matrix:
-          distro: [rockylinux:8, rockylinux:9, amazonlinux:2]
+          distro: [rockylinux:9, centos:7, almalinux:8]
       run: |
-        docker run --rm -v ${{ github.workspace }}:/app -w /app ${{ matrix.distro }} bash -c "
+        docker run --rm -v ${{ github.workspace }}:/app -w /app -e CI=true ${{ matrix.distro }} bash -c "
           yum install -y rsyslog audit python3 &&
-          chmod +x /app/src/installers/rhel/qradar_rhel_installer.sh &&
-          /app/src/installers/rhel/qradar_rhel_installer.sh 127.0.0.1 514 --dry-run"
+          /app/src/installers/rhel/qradar_rhel_installer.sh 127.0.0.1 514 --dry-run &&
+          grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf"
 
     - name: Relocate installer log
       if: always()
@@ -162,3 +170,13 @@ jobs:
       with:
         name: installer-log-${{ matrix.distro }}
         path: ${{ runner.temp }}/qradar_rhel_setup.log
+
+    - name: Test Summary
+      if: always()
+      run: |
+        if [[ ${{ job.status }} == 'success' ]]; then
+          echo "✅ All tests passed!"
+        else
+          echo "❌ Some tests failed."
+          exit 1
+        fi
