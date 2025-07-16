@@ -41,13 +41,10 @@ Create a new audit rules file for QRadar:
 sudo nano /etc/audit/rules.d/99-qradar.rules
 ```
 
-Copy and paste the following rules into the file. You can choose between the **Standard Rules** and the **Minimal Rules**.
-
-<details>
-<summary>Standard Audit Rules (Comprehensive)</summary>
+Copy and paste the following rules into the file:
 
 ```
-# QRadar Standard Audit Rules
+# QRadar Audit Rules
 -D
 -b 16384
 -f 1
@@ -66,10 +63,8 @@ Copy and paste the following rules into the file. You can choose between the **S
 -w /etc/ssh/ssh_config -p wa -k ssh_config
 -w /root/.ssh/ -p wa -k ssh_keys
 -w /home/*/.ssh/ -p wa -k ssh_keys
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b64 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
--a always,exit -F arch=b32 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
+-a always,exit -F arch=b64 -S execve -k root_commands
+-a always,exit -F arch=b32 -S execve -k root_commands
 -w /bin/su -p x -k privilege_escalation
 -w /usr/bin/sudo -p x -k privilege_escalation
 -w /usr/bin/pkexec -p x -k privilege_escalation
@@ -124,48 +119,6 @@ Copy and paste the following rules into the file. You can choose between the **S
 -w /sbin/auditctl -p x -k audit_tools
 -w /sbin/auditd -p x -k audit_tools
 ```
-</details>
-
-<details>
-<summary>Minimal Audit Rules (EPS Optimized)</summary>
-
-```
-# QRadar Minimal Audit Rules (EPS Optimized)
--D
--b 4096
--f 1
--r 50
--a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--w /var/log/auth.log -p wa -k authentication
--w /var/log/secure -p wa -k authentication
--w /usr/bin/sudo -p x -k privileged_commands
--w /bin/su -p x -k privileged_commands
--w /usr/bin/pkexec -p x -k privileged_commands
--w /etc/passwd -p wa -k identity_files
--w /etc/shadow -p wa -k identity_files
--w /etc/sudoers -p wa -k identity_files
--w /etc/sudoers.d/ -p wa -k identity_files
--w /usr/bin/systemctl -p x -k service_control
--w /sbin/service -p x -k service_control
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/reboot -p x -k system_reboot
--w /sbin/halt -p x -k system_shutdown
--a exclude,always -F msgtype=SERVICE_START
--a exclude,always -F msgtype=SERVICE_STOP
--a exclude,always -F msgtype=BPF
--a never,exit -F exe=/usr/bin/awk
--a never,exit -F exe=/usr/bin/grep
--a never,exit -F exe=/usr/bin/sed
--a never,exit -F exe=/bin/cat
--a never,exit -F exe=/bin/ls
--a never,exit -F dir=/tmp/
--a never,exit -F dir=/var/spool/
--a never,exit -F dir=/var/tmp/
-```
-</details>
 
 ### 3. Configure Audispd to Forward to Syslog
 
@@ -208,18 +161,6 @@ import re
 import socket
 import signal
 
-MITRE_TECHNIQUES = {
-    'T1003': ['cat /etc/shadow', 'cat /etc/gshadow', 'getent shadow', 'dump'],
-    'T1059': ['bash', 'sh', 'zsh', 'python', 'perl', 'ruby', 'php', 'node'],
-    'T1070': ['history -c', 'rm /root/.bash_history', 'shred', 'wipe'],
-    'T1071': ['curl', 'wget', 'ftp', 'sftp'],
-    'T1082': ['uname -a', 'lscpu', 'lshw', 'dmidecode'],
-    'T1087': ['who', 'w', 'last', 'lastlog', 'id', 'getent passwd'],
-    'T1105': ['scp', 'rsync', 'socat', 'ncat'],
-    'T1548': ['sudo', 'su -', 'pkexec'],
-    'T1562': ['systemctl stop auditd', 'service auditd stop', 'auditctl -e 0'],
-}
-
 class ExecveParser:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -250,23 +191,11 @@ class ExecveParser:
             cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
             cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
 
-            mitre_techniques = self._analyze_mitre_techniques(combined_command)
-            mitre_info = f' mitre_techniques="{",".join(mitre_techniques)}"' if mitre_techniques else ""
-
-            processed_line = f"DEBIAN_PROCESSED: {cleaned_line} cmd=\"{combined_command}\"{mitre_info}"
+            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
             return processed_line
 
         except Exception:
             return line
-
-    def _analyze_mitre_techniques(self, command):
-        found_techniques = []
-        for technique, patterns in MITRE_TECHNIQUES.items():
-            for pattern in patterns:
-                if pattern in command.lower():
-                    found_techniques.append(technique)
-                    break
-        return list(set(found_techniques))
 
     def run(self):
         try:
@@ -371,13 +300,10 @@ Create a new audit rules file for QRadar:
 sudo nano /etc/audit/rules.d/99-qradar.rules
 ```
 
-Copy and paste the following rules into the file. You can choose between the **Standard Rules** and the **Minimal Rules**.
-
-<details>
-<summary>Standard Audit Rules (Comprehensive)</summary>
+Copy and paste the following rules into the file:
 
 ```
-# QRadar Standard Audit Rules
+# QRadar Audit Rules
 -D
 -b 16384
 -f 1
@@ -396,10 +322,8 @@ Copy and paste the following rules into the file. You can choose between the **S
 -w /etc/ssh/ssh_config -p wa -k ssh_config
 -w /root/.ssh/ -p wa -k ssh_keys
 -w /home/*/.ssh/ -p wa -k ssh_keys
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b64 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
--a always,exit -F arch=b32 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
+-a always,exit -F arch=b64 -S execve -k root_commands
+-a always,exit -F arch=b32 -S execve -k root_commands
 -w /bin/su -p x -k privilege_escalation
 -w /usr/bin/sudo -p x -k privilege_escalation
 -w /usr/bin/pkexec -p x -k privilege_escalation
@@ -454,48 +378,6 @@ Copy and paste the following rules into the file. You can choose between the **S
 -w /sbin/auditctl -p x -k audit_tools
 -w /sbin/auditd -p x -k audit_tools
 ```
-</details>
-
-<details>
-<summary>Minimal Audit Rules (EPS Optimized)</summary>
-
-```
-# QRadar Minimal Audit Rules (EPS Optimized)
--D
--b 4096
--f 1
--r 50
--a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--w /var/log/auth.log -p wa -k authentication
--w /var/log/secure -p wa -k authentication
--w /usr/bin/sudo -p x -k privileged_commands
--w /bin/su -p x -k privileged_commands
--w /usr/bin/pkexec -p x -k privileged_commands
--w /etc/passwd -p wa -k identity_files
--w /etc/shadow -p wa -k identity_files
--w /etc/sudoers -p wa -k identity_files
--w /etc/sudoers.d/ -p wa -k identity_files
--w /usr/bin/systemctl -p x -k service_control
--w /sbin/service -p x -k service_control
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/reboot -p x -k system_reboot
--w /sbin/halt -p x -k system_shutdown
--a exclude,always -F msgtype=SERVICE_START
--a exclude,always -F msgtype=SERVICE_STOP
--a exclude,always -F msgtype=BPF
--a never,exit -F exe=/usr/bin/awk
--a never,exit -F exe=/usr/bin/grep
--a never,exit -F exe=/usr/bin/sed
--a never,exit -F exe=/bin/cat
--a never,exit -F exe=/bin/ls
--a never,exit -F dir=/tmp/
--a never,exit -F dir=/var/spool/
--a never,exit -F dir=/var/tmp/
-```
-</details>
 
 ### 3. Configure Audispd to Forward to Syslog
 
@@ -534,18 +416,6 @@ import re
 import socket
 import signal
 
-MITRE_TECHNIQUES = {
-    'T1003': ['cat /etc/shadow', 'cat /etc/gshadow', 'getent shadow', 'dump'],
-    'T1059': ['bash', 'sh', 'zsh', 'python', 'perl', 'ruby', 'php', 'node'],
-    'T1070': ['history -c', 'rm /root/.bash_history', 'shred', 'wipe'],
-    'T1071': ['curl', 'wget', 'ftp', 'sftp'],
-    'T1082': ['uname -a', 'lscpu', 'lshw', 'dmidecode'],
-    'T1087': ['who', 'w', 'last', 'lastlog', 'id', 'getent passwd'],
-    'T1105': ['scp', 'rsync', 'socat', 'ncat'],
-    'T1548': ['sudo', 'su -', 'pkexec'],
-    'T1562': ['systemctl stop auditd', 'service auditd stop', 'auditctl -e 0'],
-}
-
 class ExecveParser:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -576,23 +446,11 @@ class ExecveParser:
             cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
             cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
 
-            mitre_techniques = self._analyze_mitre_techniques(combined_command)
-            mitre_info = f' mitre_techniques="{",".join(mitre_techniques)}"' if mitre_techniques else ""
-
-            processed_line = f"RHEL_PROCESSED: {cleaned_line} cmd=\"{combined_command}\"{mitre_info}"
+            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
             return processed_line
 
         except Exception:
             return line
-
-    def _analyze_mitre_techniques(self, command):
-        found_techniques = []
-        for technique, patterns in MITRE_TECHNIQUES.items():
-            for pattern in patterns:
-                if pattern in command.lower():
-                    found_techniques.append(technique)
-                    break
-        return list(set(found_techniques))
 
     def run(self):
         try:

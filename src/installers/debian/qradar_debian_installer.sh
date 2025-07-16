@@ -317,43 +317,11 @@ import socket
 import signal
 from datetime import datetime
 
-# MITRE ATT&CK teknik eşlemeleri (Debian/Kali özel)
-MITRE_TECHNIQUES = {
-    'T1003': ['cat /etc/shadow', 'cat /etc/gshadow', 'getent shadow', 'john', 'hashcat'],
-    'T1059': ['bash', 'sh', 'zsh', 'python', 'perl', 'ruby', 'php', 'node', 'msfconsole'],
-    'T1070': ['history -c', 'rm /root/.bash_history', 'shred', 'wipe', 'bleachbit'],
-    'T1071': ['curl', 'wget', 'ftp', 'sftp', 'nc', 'netcat'],
-    'T1082': ['uname -a', 'lscpu', 'lshw', 'dmidecode', 'systeminfo'],
-    'T1087': ['who', 'w', 'last', 'lastlog', 'id', 'getent passwd'],
-    'T1105': ['scp', 'rsync', 'socat', 'ncat', 'meterpreter'],
-    'T1548': ['sudo', 'su -', 'pkexec', 'gksudo'],
-    'T1562': ['systemctl stop auditd', 'service auditd stop', 'auditctl -e 0'],
-    'T1033': ['whoami', 'id', 'logname'],
-    'T1018': ['nmap', 'netdiscover', 'arp-scan', 'fping'],
-    'T1046': ['nmap', 'masscan', 'zmap', 'rustscan'],
-    'T1083': ['find', 'locate', 'ls -la', 'dir'],
-}
-
 class DebianExecveParser:
     def __init__(self):
         # Signal handler'ları ayarla
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
-        self.system_type = self._detect_system()
-    
-    def _detect_system(self):
-        """Sistem tipini tespit et (Debian/Kali)"""
-        try:
-            with open('/etc/os-release', 'r') as f:
-                content = f.read()
-                if 'kali' in content.lower():
-                    return "Kali"
-                elif 'debian' in content.lower():
-                    return "Debian"
-                else:
-                    return "Unknown"
-        except:
-            return "Unknown"
     
     def _signal_handler(self, signum, frame):
         """Graceful shutdown için signal handler"""
@@ -389,34 +357,13 @@ class DebianExecveParser:
             cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
             cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
             
-            # MITRE tekniklerini analiz et
-            mitre_techniques = self._analyze_mitre_techniques(combined_command)
-            mitre_info = ""
-            if mitre_techniques:
-                mitre_info = f' mitre_techniques="{",".join(mitre_techniques)}"'
-            
-            # Sistem tipini ekle
-            system_info = f' system_type="{self.system_type}"'
-            
             # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"DEBIAN_PROCESSED: {cleaned_line} cmd=\"{combined_command}\"{mitre_info}{system_info}"
+            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
             return processed_line
             
         except Exception as e:
             # Hata durumunda orijinal satırı döndür
             return line
-    
-    def _analyze_mitre_techniques(self, command):
-        """Komutta MITRE ATT&CK tekniklerini tespit et"""
-        found_techniques = []
-        command_lower = command.lower()
-        
-        for technique, patterns in MITRE_TECHNIQUES.items():
-            for pattern in patterns:
-                if pattern.lower() in command_lower:
-                    found_techniques.append(technique)
-                    break
-        return list(set(found_techniques))
     
     def send_to_qradar(self, message, qradar_ip, qradar_port):
         """İşlenmiş mesajı QRadar'a TCP ile gönder"""
@@ -532,9 +479,8 @@ EOF
     else
         log "INFO" "Standard audit kuralları kullanılıyor"
         cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Universal Debian/Kali Audit Rules v4.0.0
-# Debian 9+ ve tüm Kali sürümleri için uyumlu
-# MITRE ATT&CK Framework uyumlu güvenlik monitoring
+# QRadar Universal Debian/Kali Audit Rules v4.1.0
+# Comprehensive user behavior logging
 
 ## Mevcut kuralları temizle ve yeniden başlat
 -D
@@ -790,13 +736,11 @@ configure_rsyslog() {
     fi
     
     cat > "$RSYSLOG_QRADAR_CONF" << EOF
-# QRadar Universal Debian/Kali Log Forwarding Configuration v4.0.0
+# QRadar Universal Debian/Kali Log Forwarding Configuration v4.1.0
 # $system_name için optimize edilmiş
-# Üretim ortamı hazır yapılandırma
 
 # Gerekli modülleri yükle
 module(load="omprog")
-module(load="imfile")
 
 # Ana kuyruk yapılandırması (yüksek performans için)
 main_queue(
@@ -809,217 +753,25 @@ main_queue(
     queue.timeoutshutdown="10000"
 )
 
-# LEEF v2 template for QRadar integration
-template(name="LEEFv2Debian" type="string" 
-         string="LEEF:2.0|Linux|Debian|4.0.0|%\$.audit_type%|^|devTime=%timereported:::date-rfc3339%^src=%hostname%^auid=%\$.auid%^uid=%\$.uid%^euid=%\$.euid%^pid=%\$.pid%^exe=%\$.exe%^cmd=%\$.full_command%^success=%\$.success%^key=%\$.key%^system_type=Debian^version=$DEBIAN_VERSION\\n")
-
 # QRadar için template
 template(name="QRadarDebianFormat" type="string" 
          string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
-# Enhanced noise reduction - Block unnecessary daemon and kernel messages
-if (\$msg contains "systemd:" and not (\$msg contains "Failed" or \$msg contains "failed" or \$msg contains "error" or \$msg contains "denied")) or 
-   \$msg contains "NetworkManager" or 
-   \$msg contains "dhclient" or 
-   \$msg contains "chronyd" or 
-   \$msg contains "avahi" or
-   \$msg contains "dbus" or
-   \$msg contains "cron[" or
-   \$msg contains "CRON[" or
-   \$msg contains "anacron" or
-   \$msg contains "logrotate" or
-   \$msg contains "rsyslog:" or
-   \$msg contains "systemd-logind" or
-   \$msg contains "systemd-resolved" or
-   \$msg contains "systemd-timesyncd" then {
-    stop
-}
-
-# Enhanced kernel message filtering - Only security relevant events  
-if \$syslogfacility-text == "kern" and not (\$msg contains "denied" or \$msg contains "blocked" or \$msg contains "failed" or \$msg contains "segfault" or \$msg contains "killed" or \$msg contains "audit" or \$msg contains "firewall") then {
-    stop
-}
-
-# Debian/Kali syslog dosyasını izle (kritik olaylar için)
-input(
-    type="imfile"
-    file="/var/log/syslog"
-    tag="debian-syslog"
-    facility="local4"
-    ruleset="debian_syslog_processing"
-)
-
-# Debian/Kali syslog işleme kuralları - Enhanced MITRE ATT&CK monitoring
-ruleset(name="debian_syslog_processing") {
-    # Enhanced security event detection including Kali-specific tools
-    if \$msg contains "FAILED" or \$msg contains "denied" or \$msg contains "authentication" or \$msg contains "sudo" or \$msg contains "su:" or
-       \$msg contains "Invalid user" or \$msg contains "Failed password" or \$msg contains "Connection closed" or
-       \$msg contains "Accepted publickey" or \$msg contains "Accepted password" or \$msg contains "session opened" or 
-       \$msg contains "session closed" or \$msg contains "privilege escalation" or \$msg contains "pkexec" or
-       \$msg contains "polkit" or \$msg contains "pam_" or \$msg contains "login:" or \$msg contains "logout:" or
-       \$msg contains "useradd" or \$msg contains "userdel" or \$msg contains "usermod" or \$msg contains "groupadd" or
-       \$msg contains "passwd:" or \$msg contains "chage" or \$msg contains "mount" or \$msg contains "umount" or
-       \$msg contains "iptables" or \$msg contains "firewall" or \$msg contains "ufw" or 
-       \$msg contains "service started" or \$msg contains "service stopped" or \$msg contains "systemctl" or
-       \$msg contains "crontab" or \$msg contains "at[" or \$msg contains "batch" or
-       \$msg contains "nmap" or \$msg contains "metasploit" or \$msg contains "aircrack" or \$msg contains "hydra" or
-       \$msg contains "sqlmap" or \$msg contains "nikto" or \$msg contains "gobuster" or \$msg contains "dirb" then {
-        # LEEF v2 format for enhanced events
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="50000"
-            action.resumeRetryCount="-1"
-            action.reportSuspension="on"
-        )
-        
-        # Traditional format for compatibility
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="QRadarDebianFormat"
-            queue.type="linkedlist"
-            queue.size="50000"
-            action.resumeRetryCount="-1"
-            action.reportSuspension="on"
-        )
-    }
-    stop
-}
-
-# MITRE ATT&CK File Activity Monitoring for Debian/Kali
-input(
-    type="imfile"
-    file="/var/log/dpkg.log"
-    tag="debian-package"
-    facility="local5"
-    ruleset="debian_file_activity_processing"
-)
-
-ruleset(name="debian_file_activity_processing") {
-    # Package installation/removal monitoring (T1505.003, T1027) + Kali tool installations
-    if \$msg contains "install" or \$msg contains "remove" or \$msg contains "purge" or \$msg contains "configure" then {
-        # LEEF v2 format for package activities
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-        
-        # Traditional format
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="QRadarDebianFormat"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-    }
-    stop
-}
-
-# Audit log'larını işle (local3 facility) with LEEF v2 support
+# Audit log'larını işle (local3 facility)
 if \$syslogfacility-text == "local3" then {
-    # Gürültülü audit mesajlarını filtrele
-    if \$msg contains "proctitle=" or \$msg contains "PROCTITLE" or \$msg contains "unknown file" then {
-        stop
-    }
-    
-    # Extract audit fields for LEEF processing
-    set \$.audit_type = regex_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
-    set \$.auid = regex_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
-    set \$.uid = regex_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
-    set \$.euid = regex_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
-    set \$.pid = regex_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
-    set \$.exe = regex_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
-    set \$.success = regex_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
-    set \$.key = regex_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
-    
-    # Enhanced EXECVE command processing 
+    # EXECVE mesajlarını özel parser ile işle
     if \$msg contains "type=EXECVE" then {
-        # Enhanced EXECVE command reconstruction with extended argument support
-        set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a6 = regex_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a7 = regex_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a8 = regex_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a9 = regex_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
-        
-        # Build complete command line with all arguments
-        set \$.full_command = \$.a0;
-        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
-        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
-        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
-        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
-        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
-        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
-        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
-        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
-        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
-        
-        # Send with traditional parser
         action(
             type="omprog"
-            binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
+            binary="$CONCAT_SCRIPT_PATH"
             template="RSYSLOG_TraditionalFileFormat"
             queue.type="linkedlist"
             queue.size="10000"
             action.resumeRetryCount="-1"
         )
-        
-        # Send LEEF v2 format directly to QRadar
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-            action.reportSuspension="on"
-        )
-        stop
-    } else {
-        set \$.full_command = "N/A";
     }
     
-    # Diğer audit mesajlarını dual format ile ilet (LEEF v2 + Traditional)
-    # LEEF v2 format
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="LEEFv2Debian"
-        queue.type="linkedlist"
-        queue.size="50000"
-        queue.dequeuebatchsize="500"
-        action.resumeRetryCount="-1"
-        action.reportSuspension="on"
-        action.reportSuspensionContinuation="on"
-        action.resumeInterval="10"
-    )
-    
-    # Traditional format
+    # Tüm audit loglarını ilet
     action(
         type="omfwd"
         target="$QRADAR_IP"
@@ -1038,166 +790,8 @@ if \$syslogfacility-text == "local3" then {
     stop
 }
 
-# Kimlik doğrulama olayları (authpriv/auth) - Dual Format
+# Kimlik doğrulama olayları (authpriv/auth)
 if \$syslogfacility-text == "authpriv" or \$syslogfacility-text == "auth" then {
-    # Sadece güvenlik ile ilgili auth olaylarını dual format ile ilet
-    if \$msg contains "sudo" or \$msg contains "su:" or \$msg contains "ssh" or \$msg contains "login" or \$msg contains "authentication" or \$msg contains "FAILED" or \$msg contains "invalid" or \$msg contains "denied" then {
-        # LEEF v2 format for auth events
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-        
-        # Traditional format for auth events
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="QRadarDebianFormat"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-    }
-    stop
-}
-
-# Kritik sistem mesajları (önem seviyesi 3 ve altı) - Dual Format
-if \$syslogseverity <= 3 then {
-    # Sistem gürültüsünü filtrele
-    if not (\$msg contains "systemd:" or \$msg contains "NetworkManager" or \$msg contains "chronyd") then {
-        # LEEF v2 format for critical messages
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-        
-        # Traditional format for critical messages
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="QRadarDebianFormat"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-    }
-}
-
-# =================================================================
-# FALLBACK: Doğrudan audit.log dosyası izleme
-# =================================================================
-
-input(
-    type="imfile"
-    file="/var/log/audit/audit.log"
-    tag="audit-direct"
-    facility="local3"
-    ruleset="direct_audit_processing"
-)
-
-ruleset(name="direct_audit_processing") {
-    # Extract audit fields for LEEF processing
-    set \$.audit_type = regex_extract(\$msg, "type=([A-Z_]+)", 0, 1, "UNKNOWN");
-    set \$.auid = regex_extract(\$msg, "auid=([0-9-]+)", 0, 1, "-1");
-    set \$.uid = regex_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
-    set \$.euid = regex_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
-    set \$.pid = regex_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
-    set \$.exe = regex_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
-    set \$.success = regex_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
-    set \$.key = regex_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
-    
-    # Enhanced EXECVE processing in fallback mode
-    if \$msg contains "type=EXECVE" then {
-        # Enhanced EXECVE command reconstruction with extended arguments
-        set \$.a0 = regex_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a1 = regex_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a2 = regex_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a3 = regex_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a4 = regex_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a5 = regex_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a6 = regex_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a7 = regex_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a8 = regex_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a9 = regex_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
-        
-        # Build complete command line with all arguments
-        set \$.full_command = \$.a0;
-        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
-        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
-        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
-        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
-        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
-        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
-        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
-        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
-        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
-        
-        # Send with traditional parser
-        action(
-            type="omprog"
-            binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
-            template="RSYSLOG_TraditionalFileFormat"
-        )
-        
-        # Send LEEF v2 format directly
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="LEEFv2Debian"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-        
-        # Send traditional format directly
-        action(
-            type="omfwd"
-            target="$QRADAR_IP"
-            port="$QRADAR_PORT"
-            protocol="tcp"
-            template="QRadarDebianFormat"
-            queue.type="linkedlist"
-            queue.size="25000"
-            action.resumeRetryCount="-1"
-        )
-        stop
-    } else {
-        set \$.full_command = "N/A";
-    }
-    
-    # Diğer audit olaylarını dual format ile ilet (LEEF v2 + Traditional)
-    # LEEF v2 format
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="LEEFv2Debian"
-        queue.type="linkedlist"
-        queue.size="25000"
-        action.resumeRetryCount="-1"
-        action.reportSuspension="on"
-    )
-    
-    # Traditional format
     action(
         type="omfwd"
         target="$QRADAR_IP"
@@ -1207,9 +801,7 @@ ruleset(name="direct_audit_processing") {
         queue.type="linkedlist"
         queue.size="25000"
         action.resumeRetryCount="-1"
-        action.reportSuspension="on"
     )
-    
     stop
 }
 EOF
