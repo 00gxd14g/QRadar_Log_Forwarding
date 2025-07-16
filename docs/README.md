@@ -114,7 +114,7 @@ sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
 #### Check Command Concatenation
 ```bash
 # Test the Python script directly
-echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/qradar_execve_parser.py --test
+echo 'type=EXECVE msg=audit(1234567890.123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | python3 /usr/local/bin/qradar_execve_parser.py
 ```
 
 ## 🛡️ Security Considerations
@@ -197,7 +197,7 @@ sudo getsebool -a | grep rsyslog
 #### Python Script Issues
 ```bash
 # Test script manually
-sudo python3 /usr/local/bin/qradar_execve_parser.py --test
+sudo python3 /usr/local/bin/qradar_execve_parser.py
 
 # Check script permissions
 ls -la /usr/local/bin/qradar_execve_parser.py
