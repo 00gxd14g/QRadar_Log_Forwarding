@@ -5,19 +5,13 @@
 ![Bash](https://img.shields.io/badge/Shell-Bash-green?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.6+-red?style=flat-square)
 
-An enterprise-grade, production-ready solution for configuring Linux systems to forward audit logs to IBM QRadar SIEM with optimized log filtering, command argument concatenation, and comprehensive security monitoring designed for customer environments.
+An enterprise-grade, production-ready solution for configuring Linux systems to forward audit logs to IBM QRadar SIEM.
 
 ## 🚀 Features
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
-- **Dual Format Log Support**: Simultaneous LEEF v2 and traditional format output for maximum compatibility
-- **LEEF v2 Format Support**: IBM QRadar optimized Log Event Extended Format v2.0 with standardized field mapping
-- **Enhanced Audit Rules Management**: Multi-layered audit rules loading with intelligent fallback mechanisms
-- **Direct Audit.Log Monitoring**: Automatic fallback to direct /var/log/audit/audit.log monitoring when audit rules fail
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
-- **EPS Optimization**: Optional minimal audit rules focusing on 5 critical security categories for reduced event volume.
-- **Non-TLS TCP Transmission**: Reliable TCP-based log forwarding without encryption overhead
 - **RHEL Compatibility**: Enhanced RHEL 7/8/9 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
 - **Robust Error Handling**: Comprehensive logging, backup creation, and diagnostic functions
@@ -65,21 +59,14 @@ The script automatically installs required packages:
 
 2. **Run the universal installer**:
    ```bash
-   # Standard installation with comprehensive audit rules
    sudo ./src/installers/universal/qradar_universal_installer.sh <QRADAR_IP> <QRADAR_PORT>
-
-   # Installation with minimal audit rules for EPS optimization
-   sudo ./src/installers/universal/qradar_universal_installer.sh <QRADAR_IP> <QRADAR_PORT> --minimal
    ```
 
 ### Example Usage
 
 ```bash
-# Configure for QRadar at 192.168.1.100 on port 514 with standard rules
+# Configure for QRadar at 192.168.1.100 on port 514
 sudo ./src/installers/universal/qradar_universal_installer.sh 192.168.1.100 514
-
-# Configure for QRadar at 10.0.0.50 on port 1514 with minimal rules
-sudo ./src/installers/universal/qradar_universal_installer.sh 10.0.0.50 1514 --minimal
 ```
 
 ### Command Line Arguments
@@ -88,43 +75,9 @@ sudo ./src/installers/universal/qradar_universal_installer.sh 10.0.0.50 1514 --m
 |-----------|-------------|---------|
 | `QRADAR_IP` | IP address of your QRadar server | `192.168.1.100` |
 | `QRADAR_PORT` | Port number for log forwarding | `514` |
-| `--minimal` | (Optional) Use minimal audit rules for EPS optimization | |
 
 
 ## 🔧 Configuration Details
-
-### Audit Rules Coverage
-
-The script implements comprehensive security monitoring covering:
-
-#### System Administration
-- Password file modifications (`/etc/passwd`, `/etc/shadow`)
-- User and group management (`/etc/group`, `/etc/gshadow`)
-- Sudo configuration changes (`/etc/sudoers`)
-- SSH configuration monitoring
-
-#### Command Execution
-- All root commands (`euid=0`)
-- User commands (`euid>=1000`)
-- Privilege escalation attempts (`su`, `sudo`)
-- Shell and interpreter execution
-
-#### Network Configuration
-- Hostname and domain changes
-- Network interface configuration
-- Hosts file modifications
-- Distribution-specific network scripts
-
-#### System State Changes
-- System shutdown/reboot commands
-- Kernel module loading/unloading
-- Authentication system changes (PAM)
-
-#### Suspicious Activities
-- Network tools usage (`wget`, `curl`, `nc`)
-- Remote access tools (`ssh`, `scp`, `rsync`)
-- Temporary file system access
-- System call monitoring (`ptrace`)
 
 ### File Locations
 
@@ -140,16 +93,6 @@ After installation, configuration files are located at:
 ```
 
 ## 🔍 Testing & Verification
-
-### Automated Testing
-
-The script includes built-in diagnostic functions that test:
-
-1. **Service Status**: Verifies auditd and rsyslog are running
-2. **Configuration Validation**: Checks rsyslog configuration syntax
-3. **Local Syslog Test**: Sends test message through syslog pipeline
-4. **Audit Functionality**: Triggers audit event and verifies logging
-5. **Network Connectivity**: Tests connection to QRadar server
 
 ### Manual Testing
 
@@ -195,28 +138,6 @@ All configuration files are created with appropriate permissions:
 - Python script: `755` (executable)
 - Log files: `640` (root:root)
 
-## 🔄 Enhanced Reliability Features
-
-### Multi-Layered Audit Rules Loading
-The script now uses multiple approaches to ensure audit rules are loaded:
-
-1. **Primary Method**: Platform-specific audit rules loading (augenrules/auditctl)
-2. **Fallback Method**: Line-by-line rule loading for problematic systems
-3. **Ultimate Fallback**: Direct audit.log file monitoring via rsyslog
-
-### Direct Audit.Log Monitoring
-When traditional audit rules fail to load, the script automatically configures:
-- **imfile module**: Direct monitoring of `/var/log/audit/audit.log`
-- **Automatic Processing**: EXECVE concatenation works in both modes
-- **Seamless Fallback**: No manual intervention required
-- **Full Functionality**: All audit events are still forwarded to QRadar
-
-### RHEL-Specific Enhancements
-- **RHEL 7**: Automatic audispd-plugins package installation
-- **RHEL 8/9**: Enhanced service management using service commands
-- **Platform Detection**: Intelligent handling of distribution-specific quirks
-- **Error Recovery**: Comprehensive retry mechanisms
-
 ## 📊 Log Format & Processing
 
 ### Original EXECVE Format
@@ -226,14 +147,13 @@ type=EXECVE msg=audit(1618834123.456:789): argc=3 a0="ls" a1="-la" a2="/tmp"
 
 ### Processed Format
 ```
-QRADAR_PROCESSED: type=EXECVE msg=audit(1618834123.456:789): argc=3 cmd="ls -la /tmp"
+type=EXECVE msg=audit(1618834123.456:789): cmd="ls -la /tmp"
 ```
 
 ### Benefits
 - **Simplified Parsing**: Single `cmd` field instead of multiple `aX` fields
 - **Better Readability**: Complete command visible in SIEM
 - **Enhanced Analytics**: Easier to create QRadar rules and searches
-- **Processing Indicator**: `*_PROCESSED` prefix for tracking
 
 ## 🆘 Troubleshooting Guide
 
@@ -350,19 +270,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Troubleshooting**: See [MANUAL_FIXES.md](MANUAL_FIXES.md) for comprehensive troubleshooting
 - **Changelog**: View [CHANGELOG.md](CHANGELOG.md) for detailed version history
 - **Security**: Report security vulnerabilities privately to the project maintainer
-
-## 📈 Latest Updates
-
-### Version 4.1.0 (Current) ✨
-- **Dual Format Output**: Simultaneous LEEF v2 and traditional format transmission.
-- **EPS Optimization**: Optional minimal audit rules for reduced event volume.
-- **Universal Installer**: Single installer for all supported distributions.
-- **MITRE ATT&CK**: Comprehensive audit rules mapped to MITRE ATT&CK framework.
-- **Enhanced Security**: Removed `eval` usage and implemented secure command execution.
-- **RHEL 7/8/9 Compatibility**: Full support for the entire RHEL family.
-- **GitHub Release Management**: Automated release creation and distribution archives.
-
-**Full Changelog**: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
