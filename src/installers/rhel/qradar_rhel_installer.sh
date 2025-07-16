@@ -765,6 +765,11 @@ configure_selinux() {
         if command_exists setsebool; then
             safe_execute "SELinux rsyslog network boolean ayarlama" setsebool -P rsyslog_can_network_connect on
             success "SELinux rsyslog network bağlantısı aktifleştirildi"
+            
+            # Oracle Linux 8/9 için ek boolean
+            if [[ "$DISTRO_ID" == "ol" ]] && [[ $VERSION_MAJOR -ge 8 ]]; then
+                safe_execute "SELinux rsyslogd_use_tcp boolean ayarlama" setsebool -P rsyslogd_use_tcp on || true
+            fi
         fi
         
         # Python script için SELinux context ayarla
@@ -818,7 +823,6 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"

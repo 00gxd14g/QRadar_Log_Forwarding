@@ -166,4 +166,16 @@ class ExecveParser:
 
 if __name__ == "__main__":
     parser = ExecveParser()
-    parser.run()
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        # Test the parser with a sample line
+        test_line = 'type=EXECVE msg=audit(1678886400.123:456): argc=3 a0="sudo" a1="ls" a2="-la"'
+        expected_cmd = 'sudo ls -la'
+        processed = parser.parse_line(test_line)
+        if processed and f'cmd="{expected_cmd}"' in processed:
+            print("Test PASSED")
+            sys.exit(0)
+        else:
+            print("Test FAILED")
+            sys.exit(1)
+    else:
+        parser.run()
