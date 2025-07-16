@@ -14,48 +14,62 @@ jobs:
       matrix:
         os: [ubuntu-20.04, ubuntu-22.04]
         python-version: [3.8, 3.9, 3.10]
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.x'
-    
+
+    - name: Install dependencies
+      run: |
+        pip install black ruff pytest
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+
+    - name: Run Linters
+      run: |
+        black --check .
+        ruff check .
+
     - name: Test Bash Script Syntax
       run: |
         echo "🔍 Testing Bash script syntax..."
-        bash -n setup_qradar_logging.sh
+        shellcheck src/installers/rhel/qradar_rhel_installer.sh
+        shellcheck src/installers/debian/qradar_debian_installer.sh
+        shellcheck src/installers/ubuntu/qradar_ubuntu_installer.sh
+        shellcheck src/installers/universal/qradar_universal_installer.sh
         echo "✅ Bash script syntax check passed"
-    
+
     - name: Test Python Script Syntax
       run: |
         echo "🔍 Testing Python script syntax..."
-        python3 -m py_compile concat_execve.py
+        python3 -m py_compile src/helpers/execve_parser.py
         echo "✅ Python script syntax check passed"
-    
+
     - name: Run Python Script Tests
       run: |
         echo "🧪 Running Python script functionality tests..."
-        python3 concat_execve.py --test
+        pytest tests/
         echo "✅ Python script functionality tests passed"
-    
+
     - name: Validate File Structure
       run: |
         echo "📁 Validating file structure..."
-        
+
         # Check required files exist
         files=(
-          "setup_qradar_logging.sh"
-          "concat_execve.py"
-          "README.md"
-          "CHANGELOG.md"
-          "LICENSE"
+          "src/installers/universal/qradar_universal_installer.sh"
+          "src/helpers/execve_parser.py"
+          "docs/README.md"
+          "docs/CHANGELOG.md"
+          "docs/LICENSE"
           ".gitignore"
         )
-        
+
         for file in "${files[@]}"; do
           if [[ -f "$file" ]]; then
             echo "✅ $file exists"
@@ -64,26 +78,29 @@ jobs:
             exit 1
           fi
         done
-        
+
         # Check script permissions
-        if [[ -x "setup_qradar_logging.sh" ]]; then
-          echo "✅ setup_qradar_logging.sh is executable"
-        else
-          echo "❌ setup_qradar_logging.sh is not executable"
-          exit 1
-        fi
-        
-        if [[ -x "concat_execve.py" ]]; then
-          echo "✅ concat_execve.py is executable"
-        else
-          echo "❌ concat_execve.py is not executable"
-          exit 1
-        fi
-    
+        scripts=(
+          "src/installers/rhel/qradar_rhel_installer.sh"
+          "src/installers/debian/qradar_debian_installer.sh"
+          "src/installers/ubuntu/qradar_ubuntu_installer.sh"
+          "src/installers/universal/qradar_universal_installer.sh"
+          "src/helpers/execve_parser.py"
+        )
+
+        for script in "${scripts[@]}"; do
+            if [[ -x "$script" ]]; then
+                echo "✅ $script is executable"
+            else
+                echo "❌ $script is not executable"
+                exit 1
+            fi
+        done
+
     - name: Validate Documentation
       run: |
         echo "📖 Validating documentation..."
-        
+
         # Check if README contains required sections
         required_sections=(
           "Features"
@@ -93,65 +110,55 @@ jobs:
           "Testing"
           "Troubleshooting"
         )
-        
+
         for section in "${required_sections[@]}"; do
-          if grep -q "$section" README.md; then
+          if grep -q "$section" docs/README.md; then
             echo "✅ README contains $section section"
           else
             echo "⚠️ README missing $section section"
           fi
         done
-        
+
         # Check CHANGELOG format
-        if grep -q "## \[.*\] - [0-9]" CHANGELOG.md; then
+        if grep -q "## \\[.*\] - [0-9]" docs/CHANGELOG.md; then
           echo "✅ CHANGELOG follows proper format"
         else
           echo "⚠️ CHANGELOG format may need improvement"
         fi
-    
+
     - name: Security Check
       run: |
         echo "🔒 Running basic security checks..."
-        
+
         # Check for hardcoded credentials (basic patterns)
         if grep -r -i "password\|secret\|token\|key" --include="*.sh" --include="*.py" . | grep -v "README\|CHANGELOG\|LICENSE\|test\|example"; then
           echo "⚠️ Potential hardcoded credentials found (manual review needed)"
         else
           echo "✅ No obvious hardcoded credentials detected"
         fi
-        
+
         # Check file permissions in git (stored permissions)
         echo "📋 File permissions check:"
-        ls -la setup_qradar_logging.sh concat_execve.py
-    
-    - name: Code Quality
+        ls -la src/installers/universal/qradar_universal_installer.sh src/helpers/execve_parser.py
+
+    - name: Run installer in Docker
+      strategy:
+        matrix:
+          distro: [rockylinux:8, rockylinux:9, amazonlinux:2]
       run: |
-        echo "📊 Basic code quality checks..."
-        
-        # Check for TODO/FIXME comments
-        todo_count=$(grep -r -i "todo\|fixme" --include="*.sh" --include="*.py" . | wc -l)
-        if [[ $todo_count -gt 0 ]]; then
-          echo "📝 Found $todo_count TODO/FIXME comments:"
-          grep -r -i "todo\|fixme" --include="*.sh" --include="*.py" . || true
-        else
-          echo "✅ No TODO/FIXME comments found"
-        fi
-        
-        # Basic shell script analysis
-        echo "🐚 Shell script analysis:"
-        shellcheck setup_qradar_logging.sh || echo "⚠️ ShellCheck not available or found issues"
-    
-    - name: Run tests in Docker
+        docker run --rm -v ${{ github.workspace }}:/app -w /app ${{ matrix.distro }} bash -c "
+          yum install -y rsyslog audit python3 &&
+          chmod +x /app/src/installers/rhel/qradar_rhel_installer.sh &&
+          /app/src/installers/rhel/qradar_rhel_installer.sh 127.0.0.1 514 --dry-run"
+
+    - name: Relocate installer log
+      if: always()
       run: |
-        docker run --rm -v ${{ github.workspace }}:/app -w /app rockylinux:8 bash -c "
-          yum install -y rsyslog audit &&
-          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
-          auditctl -R /app/src/installers/rhel/99-qradar.rules"
-        docker run --rm -v ${{ github.workspace }}:/app -w /app rockylinux:9 bash -c "
-          yum install -y rsyslog audit &&
-          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
-          auditctl -R /app/src/installers/rhel/99-qradar.rules"
-        docker run --rm -v ${{ github.workspace }}:/app -w /app amazonlinux:2 bash -c "
-          yum install -y rsyslog audit &&
-          rsyslogd -N1 -f /app/src/installers/universal/99-qradar.conf &&
-          auditctl -R /app/src/installers/rhel/99-qradar.rules"
+        sudo mv qradar_rhel_setup.log $RUNNER_TEMP/ || true
+        sudo chown $USER:$USER $RUNNER_TEMP/qradar_rhel_setup.log || true
+
+    - name: Upload installer log
+      uses: actions/upload-artifact@v4
+      with:
+        name: installer-log-${{ matrix.distro }}
+        path: ${{ runner.temp }}/qradar_rhel_setup.log

@@ -367,113 +367,14 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cat > "$CONCAT_SCRIPT_PATH" << 'EOF'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-QRadar Universal RHEL Family EXECVE Parser v4.0.1
+    local parser_source_path
+    parser_source_path="$(project_root)/src/helpers/execve_parser.py"
 
-Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
-tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
+    if [[ ! -f "$parser_source_path" ]]; then
+        error_exit "EXECVE parser source not found at: $parser_source_path"
+    fi
 
-RHEL 7+, CentOS 7+, Rocky Linux, AlmaLinux, Oracle Linux'ta çalışır.
-"""
-
-import sys
-import re
-import socket
-import signal
-import time
-from datetime import datetime
-
-class RHELExecveParser:
-    def __init__(self):
-        # Signal handler'ları ayarla
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Graceful shutdown için signal handler"""
-        sys.exit(0)
-    
-    def process_execve_line(self, line):
-        """EXECVE audit log satırını işle ve komut argümanlarını birleştir"""
-        if "type=EXECVE" not in line:
-            return line
-        
-        # Proctitle satırlarını atla
-        if "proctitle=" in line or "PROCTITLE" in line:
-            return None
-        
-        try:
-            # Tüm argüman alanlarını yakala: a0="...", a1="...", vb.
-            args_pattern = r'a(\d+)="([^"]*)"'
-            args_matches = re.findall(args_pattern, line)
-            
-            if not args_matches:
-                return line
-            
-            # Argümanları index'e göre sırala
-            args_dict = {}
-            for arg_index, arg_value in args_matches:
-                args_dict[int(arg_index)] = arg_value
-            
-            # Argümanları sıralı şekilde birleştir
-            sorted_args = sorted(args_dict.items())
-            combined_command = " ".join(arg[1] for arg in sorted_args)
-            
-            # Mevcut aX="..." alanlarını kaldır
-            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
-            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
-            
-            # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f'{cleaned_line} cmd="{combined_command}"'
-            return processed_line
-            
-        except Exception as e:
-            # Hata durumunda orijinal satırı döndür
-            return line
-    
-    def run(self):
-        """Ana işlem döngüsü"""
-        retry_delay = 1
-        max_delay = 60
-        while True:
-            try:
-                for line in sys.stdin:
-                    line = line.strip()
-                    if line:
-                        processed_line = self.process_execve_line(line)
-                        if processed_line is not None:
-                            print(processed_line, flush=True)
-                break  # stdin kapanırsa döngüden çık
-            except BrokenPipeError:
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, max_delay)
-            except (KeyboardInterrupt, SystemExit):
-                break
-            except Exception:
-                sys.exit(1)
-
-    def run_test(self):
-        """Test a sample EXECVE line."""
-        test_line = 'type=EXECVE msg=audit(1678886400.123:456): argc=3 a0="sudo" a1="ls" a2="-la"'
-        expected_cmd = 'sudo ls -la'
-        processed = self.process_execve_line(test_line)
-        return processed and f'cmd="{expected_cmd}"' in processed
-
-if __name__ == "__main__":
-    parser = RHELExecveParser()
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        if parser.run_test():
-            print("Test PASSED")
-            sys.exit(0)
-        else:
-            print("Test FAILED")
-            sys.exit(1)
-    else:
-        parser.run()
-EOF
+    cp "$parser_source_path" "$CONCAT_SCRIPT_PATH"
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"
@@ -770,11 +671,6 @@ configure_selinux() {
         if command_exists setsebool; then
             safe_execute "SELinux rsyslog network boolean ayarlama" setsebool -P rsyslog_can_network_connect on
             success "SELinux rsyslog network bağlantısı aktifleştirildi"
-            
-            # Oracle Linux 8/9 için ek boolean
-            if [[ "$DISTRO_ID" == "ol" ]] && [[ $VERSION_MAJOR -ge 8 ]]; then
-                safe_execute "SELinux rsyslogd_use_tcp boolean ayarlama" setsebool -P rsyslogd_use_tcp on || true
-            fi
         fi
         
         # Python script için SELinux context ayarla
@@ -842,6 +738,7 @@ configure_rsyslog() {
     # shellcheck source=../universal/99-qradar.conf
     sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
+        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
         "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     # Validate generated configuration

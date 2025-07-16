@@ -4,7 +4,7 @@ This document provides instructions for manually configuring Linux systems to fo
 
 ## Introduction
 
-The goal of this setup is to configure `auditd` to collect system audit events and `rsyslog` to forward these events to QRadar.
+The goal of this setup is to configure `auditd` to collect system audit events, `rsyslog` to forward these events to QRadar, and a Python script to parse and format the logs for better readability and analysis in QRadar.
 
 This guide is divided into two main sections:
 *   **Debian/Ubuntu Setup**
@@ -30,7 +30,7 @@ First, update your package list and install the necessary packages:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y auditd audispd-plugins rsyslog
+sudo apt-get install -y auditd audispd-plugins rsyslog python3
 ```
 
 ### 2. Configure Auditd Rules
@@ -143,7 +143,85 @@ args = LOG_LOCAL3
 format = string
 ```
 
-### 4. Configure Rsyslog Forwarding
+### 4. Deploy the Python Parser Script
+
+Create the Python script to parse and format the `EXECVE` logs:
+
+```bash
+sudo nano /usr/local/bin/qradar_execve_parser.py
+```
+
+Copy and paste the following code into the file:
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys
+import re
+import socket
+import signal
+
+class ExecveParser:
+    def __init__(self):
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        sys.exit(0)
+
+    def process_execve_line(self, line):
+        if "type=EXECVE" not in line:
+            return line
+
+        if "proctitle=" in line or "PROCTITLE" in line:
+            return None
+
+        try:
+            args_pattern = r'a(\d+)="([^"]*)"'
+            args_matches = re.findall(args_pattern, line)
+
+            if not args_matches:
+                return line
+
+            args_dict = {int(index): value for index, value in args_matches}
+
+            sorted_args = sorted(args_dict.items())
+            combined_command = " ".join(arg[1] for arg in sorted_args)
+
+            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
+            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
+
+            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
+            return processed_line
+
+        except Exception:
+            return line
+
+    def run(self):
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if line:
+                    processed_line = self.process_execve_line(line)
+                    if processed_line is not None:
+                        print(processed_line, flush=True)
+        except (KeyboardInterrupt, BrokenPipeError):
+            pass
+        except Exception:
+            sys.exit(1)
+
+if __name__ == "__main__":
+    parser = ExecveParser()
+    parser.run()
+```
+
+Make the script executable:
+
+```bash
+sudo chmod +x /usr/local/bin/qradar_execve_parser.py
+```
+
+### 5. Configure Rsyslog Forwarding
 
 Create a new rsyslog configuration file for QRadar:
 
@@ -155,9 +233,18 @@ Copy and paste the following configuration into the file, replacing `<QRADAR_IP>
 
 ```
 # QRadar Log Forwarding Configuration
+module(load="omprogram")
+
 template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
 if $syslogfacility-text == 'local3' then {
+    if $msg contains 'type=EXECVE' then {
+        action(
+            type="omprogram"
+            binary="/usr/local/bin/qradar_execve_parser.py"
+            template="RSYSLOG_TraditionalFileFormat"
+        )
+    }
     action(
         type="omfwd"
         target="<QRADAR_IP>"
@@ -172,7 +259,7 @@ if $syslogfacility-text == 'local3' then {
 }
 ```
 
-### 5. Restart Services
+### 6. Restart Services
 
 Restart the `auditd` and `rsyslog` services to apply the changes:
 
@@ -181,7 +268,7 @@ sudo systemctl restart auditd
 sudo systemctl restart rsyslog
 ```
 
-### 6. Verify the Setup
+### 7. Verify the Setup
 
 You can verify the setup by checking the logs on your QRadar server or by using `tcpdump` to monitor the traffic to your QRadar server:
 
@@ -201,10 +288,10 @@ First, install the necessary packages using `yum` or `dnf`:
 
 ```bash
 # For RHEL 7/CentOS 7
-sudo yum install -y audit audispd-plugins rsyslog
+sudo yum install -y audit audispd-plugins rsyslog python3
 
 # For RHEL 8+ and derivatives
-sudo dnf install -y audit rsyslog
+sudo dnf install -y audit rsyslog python3
 ```
 
 ### 2. Configure Auditd Rules
@@ -313,15 +400,94 @@ args = LOG_LOCAL3
 format = string
 ```
 
-### 4. Configure SELinux
+### 4. Deploy the Python Parser Script
 
-If SELinux is enabled on your system, you need to allow rsyslog to make network connections:
+Create the Python script to parse and format the `EXECVE` logs:
+
+```bash
+sudo nano /usr/local/bin/qradar_execve_parser.py
+```
+
+Copy and paste the following code into the file:
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys
+import re
+import socket
+import signal
+
+class ExecveParser:
+    def __init__(self):
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+    def _signal_handler(self, signum, frame):
+        sys.exit(0)
+
+    def process_execve_line(self, line):
+        if "type=EXECVE" not in line:
+            return line
+
+        if "proctitle=" in line or "PROCTITLE" in line:
+            return None
+
+        try:
+            args_pattern = r'a(\d+)="([^"]*)"'
+            args_matches = re.findall(args_pattern, line)
+
+            if not args_matches:
+                return line
+
+            args_dict = {int(index): value for index, value in args_matches}
+
+            sorted_args = sorted(args_dict.items())
+            combined_command = " ".join(arg[1] for arg in sorted_args)
+
+            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
+            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
+
+            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
+            return processed_line
+
+        except Exception:
+            return line
+
+    def run(self):
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if line:
+                    processed_line = self.process_execve_line(line)
+                    if processed_line is not None:
+                        print(processed_line, flush=True)
+        except (KeyboardInterrupt, BrokenPipeError):
+            pass
+        except Exception:
+            sys.exit(1)
+
+if __name__ == "__main__":
+    parser = ExecveParser()
+    parser.run()
+```
+
+Make the script executable:
+
+```bash
+sudo chmod +x /usr/local/bin/qradar_execve_parser.py
+```
+
+### 5. Configure SELinux
+
+If SELinux is enabled on your system, you need to allow rsyslog to make network connections and set the correct context for the Python script:
 
 ```bash
 sudo setsebool -P rsyslog_can_network_connect on
+sudo restorecon -R /usr/local/bin/qradar_execve_parser.py
 ```
 
-### 5. Configure FirewallD
+### 6. Configure FirewallD
 
 If FirewallD is enabled, you need to add a rule to allow traffic to the QRadar port:
 
@@ -330,7 +496,7 @@ sudo firewall-cmd --permanent --add-port=<QRADAR_PORT>/tcp
 sudo firewall-cmd --reload
 ```
 
-### 6. Configure Rsyslog Forwarding
+### 7. Configure Rsyslog Forwarding
 
 Create a new rsyslog configuration file for QRadar:
 
@@ -342,9 +508,18 @@ Copy and paste the following configuration into the file, replacing `<QRADAR_IP>
 
 ```
 # QRadar Log Forwarding Configuration
+module(load="omprogram")
+
 template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
 if $syslogfacility-text == 'local3' then {
+    if $msg contains 'type=EXECVE' then {
+        action(
+            type="omprogram"
+            binary="/usr/local/bin/qradar_execve_parser.py"
+            template="RSYSLOG_TraditionalFileFormat"
+        )
+    }
     action(
         type="omfwd"
         target="<QRADAR_IP>"
@@ -359,7 +534,7 @@ if $syslogfacility-text == 'local3' then {
 }
 ```
 
-### 7. Restart Services
+### 8. Restart Services
 
 Restart the `auditd` and `rsyslog` services to apply the changes:
 
@@ -368,7 +543,7 @@ sudo systemctl restart auditd
 sudo systemctl restart rsyslog
 ```
 
-### 8. Verify the Setup
+### 9. Verify the Setup
 
 You can verify the setup by checking the logs on your QRadar server or by using `tcpdump` to monitor the traffic to your QRadar server:
 
