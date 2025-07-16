@@ -237,12 +237,9 @@ QRADAR_PROCESSED: type=EXECVE msg=audit(1618834123.456:789): argc=3 cmd="ls -la 
 
 ## 🆘 Troubleshooting Guide
 
-For comprehensive troubleshooting, see **[MANUAL_FIXES.md](MANUAL_FIXES.md)** which includes:
-- Platform-specific manual fix procedures
-- RHEL 7/8/9 specific issues and solutions
-- Service management commands
-- Network connectivity tests
-- Step-by-step recovery procedures
+For comprehensive troubleshooting, see **[MANUAL_FIXES.md](MANUAL_FIXES.md)**.
+
+For manual installation instructions, see the **[MANUAL_SETUP.md](MANUAL_SETUP.md)** guide.
 
 ### Common Issues
 
