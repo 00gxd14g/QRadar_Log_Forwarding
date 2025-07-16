@@ -65,7 +65,6 @@ SYSLOG_FILE="/var/log/syslog"
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
-USE_MINIMAL_RULES=false
 DRY_RUN=false
 
 # ===============================================================================
@@ -808,10 +807,6 @@ main() {
 # Argument parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --minimal)
-            USE_MINIMAL_RULES=true
-            shift
-            ;;
         --dry-run)
             DRY_RUN=true
             shift

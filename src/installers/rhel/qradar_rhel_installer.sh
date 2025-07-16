@@ -66,7 +66,6 @@ HAS_FIREWALLD=false
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
-USE_MINIMAL_RULES=false
 OPEN_PORT=false
 DRY_RUN=false
 
@@ -840,10 +839,6 @@ main() {
 # Argument parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --minimal)
-            USE_MINIMAL_RULES=true
-            shift
-            ;;
         --open-port)
             OPEN_PORT=true
             shift
