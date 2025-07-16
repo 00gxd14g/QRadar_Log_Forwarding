@@ -1,0 +1,13 @@
+version=2
+
+# USER_AUTH parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): pid=%pid:number% uid=%uid:number% auid=%auid:number% ses=%ses:number% msg='op=%op:word% acct="%acct:word%" exe="%exe:char-to:"%" hostname=%hostname:word% addr=%addr:ipv4% terminal=%terminal:word% res=%res:word%'%
+
+# USER_CMD parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): pid=%pid:number% uid=%uid:number% auid=%auid:number% ses=%ses:number% msg='cwd="%cwd:char-to:"%" cmd=%cmd:quoted-string% terminal=%terminal:word% res=%res:word%'%
+
+# SYSCALL parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): arch=%arch:word% syscall=%syscall:number% success=%success:word% exit=%exit:number% a0=%a0:word% a1=%a1:word% a2=%a2:word% a3=%a3:word% items=%items:number% ppid=%ppid:number% pid=%pid:number% auid=%auid:number% uid=%uid:number% gid=%gid:number% euid=%euid:number% suid=%suid:number% fsuid=%fsuid:number% egid=%egid:number% sgid=%sgid:number% fsgid=%fsgid:number% tty=%tty:word% ses=%ses:number% comm="%comm:char-to:"%" exe="%exe:char-to:"%" key="%key:char-to:"%"%
+
+# EXECVE parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): argc=%argc:number% a0="%a0:char-to:"%" a1="%a1:char-to:"%" a2="%a2:char-to:"%" a3="%a3:char-to:"%"%
