@@ -1,3 +1,4 @@
+# Trivial change to force re-read of the workflow file.
 name: Continuous Integration
 
 on:
