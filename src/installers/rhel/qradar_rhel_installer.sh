@@ -805,76 +805,10 @@ configure_rsyslog() {
     
     backup_file "$RSYSLOG_QRADAR_CONF"
     
-    cat > "$RSYSLOG_QRADAR_CONF" << EOF
-# QRadar Universal RHEL Family Log Forwarding Configuration v4.1.0
-# $DISTRO_NAME için optimize edilmiş
-
-# Gerekli modülleri yükle
-module(load="omprog")
-
-# Ana kuyruk yapılandırması (enterprise performans için)
-main_queue(
-    queue.type="linkedlist"
-    queue.filename="qradar_rhel_queue"
-    queue.maxdiskspace="2g"
-    queue.size="100000"
-    queue.dequeuebatchsize="1000"
-    queue.saveonshutdown="on"
-    queue.timeoutshutdown="10000"
-)
-
-# QRadar için template
-template(name="QRadarRHELFormat" type="string" 
-         string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
-
-# Audit log'larını işle (local3 facility)
-if \$syslogfacility-text == "local3" then {
-    # EXECVE mesajlarını özel parser ile işle
-    if \$msg contains "type=EXECVE" then {
-        action(
-            type="omprog"
-            binary="$CONCAT_SCRIPT_PATH"
-            template="RSYSLOG_TraditionalFileFormat"
-            queue.type="linkedlist"
-            queue.size="10000"
-            action.resumeRetryCount="-1"
-        )
-    }
-    
-    # Tüm audit loglarını ilet
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="QRadarRHELFormat"
-        queue.type="linkedlist"
-        queue.size="50000"
-        queue.dequeuebatchsize="500"
-        action.resumeRetryCount="-1"
-        action.reportSuspension="on"
-        action.reportSuspensionContinuation="on"
-        action.resumeInterval="10"
-    )
-    
-    stop
-}
-
-# Kimlik doğrulama olayları (authpriv)
-if \$syslogfacility-text == "authpriv" then {
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="QRadarRHELFormat"
-        queue.type="linkedlist"
-        queue.size="25000"
-        action.resumeRetryCount="-1"
-    )
-    stop
-}
-EOF
+    # shellcheck source=../universal/99-qradar.conf
+    sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
+        -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
+        "$(dirname "$0")/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
     success "Rsyslog RHEL ailesi Universal yapılandırması tamamlandı"
