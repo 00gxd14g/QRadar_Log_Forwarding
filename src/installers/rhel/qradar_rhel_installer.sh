@@ -814,6 +814,12 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "RHEL ailesi sistem doğrulama testleri çalıştırılıyor..."
+
+    # Check if systemd is running
+    if ! [[ -d /run/systemd/system ]]; then
+        warn "Systemd not detected. Skipping service validation tests."
+        return
+    fi
     
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")
