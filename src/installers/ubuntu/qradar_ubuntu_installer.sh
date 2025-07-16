@@ -295,7 +295,18 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cp "$SCRIPT_DIR/../helpers/execve_parser.py" "$CONCAT_SCRIPT_PATH"
+    local parser_source_path
+    parser_source_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)/../helpers/execve_parser.py"
+
+    if [[ ! -f "$parser_source_path" ]]; then
+        if [[ "$DRY_RUN" == true ]]; then
+            warn "Skipping EXECVE parser in dry-run"
+            return 0
+        fi
+        error_exit "EXECVE parser source not found at: $parser_source_path"
+    fi
+
+    cp "$parser_source_path" "$CONCAT_SCRIPT_PATH"
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"

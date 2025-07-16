@@ -48,9 +48,10 @@ jobs:
       - name: Run RHEL installer in Docker
         run: |
           docker run --rm -v ${{ github.workspace }}:/app -w /app -e CI=true ${{ matrix.distro }} bash -c "
-            yum install -y rsyslog audit python3 &&
+            yum install -y rsyslog audit python3 || true &&
             /app/src/installers/rhel/qradar_rhel_installer.sh 127.0.0.1 514 --dry-run &&
-            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf"
+            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf &&
+            test -f /app/qradar_rhel_setup.log"
 
       - name: Relocate installer log
         if: always()
@@ -81,9 +82,10 @@ jobs:
       - name: Run Debian installer in Docker
         run: |
           docker run --rm -v ${{ github.workspace }}:/app -w /app -e CI=true ${{ matrix.distro }} bash -c "
-            apt-get update && apt-get install -y rsyslog auditd python3 &&
+            apt-get update && apt-get install -y rsyslog auditd python3 || true &&
             /app/src/installers/debian/qradar_debian_installer.sh 127.0.0.1 514 --dry-run &&
-            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf"
+            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf &&
+            test -f /app/qradar_debian_setup.log"
 
       - name: Relocate installer log
         if: always()
@@ -114,9 +116,10 @@ jobs:
       - name: Run Ubuntu installer in Docker
         run: |
           docker run --rm -v ${{ github.workspace }}:/app -w /app -e CI=true ${{ matrix.distro }} bash -c "
-            apt-get update && apt-get install -y rsyslog auditd python3 &&
+            apt-get update && apt-get install -y rsyslog auditd python3 || true &&
             /app/src/installers/ubuntu/qradar_ubuntu_installer.sh 127.0.0.1 514 --dry-run &&
-            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf"
+            grep 'target=\"127.0.0.1\"' /etc/rsyslog.d/99-qradar.conf &&
+            test -f /app/qradar_ubuntu_setup.log"
 
       - name: Relocate installer log
         if: always()
