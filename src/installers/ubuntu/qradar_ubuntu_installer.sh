@@ -38,8 +38,10 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_DIR
+# Remove these two lines
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# readonly SCRIPT_DIR
+
 readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
 readonly LOG_FILE="/var/log/qradar_ubuntu_setup.log"
 BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
