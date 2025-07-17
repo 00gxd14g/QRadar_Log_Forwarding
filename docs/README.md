@@ -11,6 +11,8 @@ An enterprise-grade, production-ready solution for configuring Linux systems to 
 
 - **Universal Linux Support**: Compatible with Debian/Ubuntu, RHEL/CentOS, Oracle Linux, AlmaLinux, and Rocky Linux
 - **Intelligent Distribution Detection**: Automatically detects and adapts to different Linux distributions and versions
+- **Advanced Log Filtering**: Filters out noisy and irrelevant logs to reduce QRadar EPS.
+- **Rich JSON Log Format**: Enriches logs with additional metadata and formats them as JSON for easy parsing in QRadar.
 - **Command Concatenation**: Advanced Python script that concatenates EXECVE command arguments for better SIEM parsing
 - **RHEL Compatibility**: Enhanced RHEL 7/8/9 support with platform-specific service management
 - **SELinux & Firewall Integration**: Automatic configuration for RHEL-based systems
@@ -84,10 +86,15 @@ sudo ./src/installers/universal/qradar_universal_installer.sh 192.168.1.100 514
 After installation, configuration files are located at:
 
 ```
+/etc/rsyslog.conf                        # Main rsyslog configuration
+/etc/rsyslog.d/99-qradar.conf            # Rsyslog QRadar forwarding config
+/etc/rsyslog.d/ignore_programs.json      # Programs to ignore
+/etc/rsyslog.d/audit.rules               # Audit normalization rules
 /etc/audit/rules.d/99-qradar.rules       # Audit rules
 /etc/audit/plugins.d/syslog.conf         # Audisp-syslog plugin config
-/etc/rsyslog.d/99-qradar.conf            # Rsyslog QRadar forwarding config
 /usr/local/bin/qradar_execve_parser.py   # Command concatenation script
+/usr/local/bin/extract_audit_type.sh     # Helper script to extract audit type
+/usr/local/bin/extract_audit_result.sh   # Helper script to extract audit result
 /var/log/qradar_*.log                    # Installation logs
 /etc/qradar_backup_YYYYMMDD_HHMMSS/      # Configuration backups
 ```

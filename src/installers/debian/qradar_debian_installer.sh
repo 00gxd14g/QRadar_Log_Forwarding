@@ -38,8 +38,6 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_NAME
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-debian-universal"
@@ -67,12 +65,16 @@ SYSLOG_FILE="/var/log/syslog"
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
-USE_MINIMAL_RULES=false
 DRY_RUN=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
 # ===============================================================================
+
+# -------------------- helpers --------------------
+detect_init() {
+    [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
+}
 
 # Geliştirilmiş logging fonksiyonu
 log() {
@@ -157,17 +159,6 @@ backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
     fi
 }
 
-# Proje kök dizinini bul
-project_root() {
-    local dir="$SCRIPT_DIR"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -f "$dir/src/installers/debian/qradar_debian_installer.sh" ]]; then
-            echo "$dir"
-            return
-        fi
-        dir="$(dirname "$dir")"
-    done
-}
 
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
@@ -318,94 +309,189 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cat > "$CONCAT_SCRIPT_PATH" << 'EOF'
+    # Create the execve parser script directly
+    cat > "$CONCAT_SCRIPT_PATH" << 'EXECVE_PARSER_EOF'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-QRadar Universal Debian/Kali EXECVE Parser v4.0.0
+QRadar Unified EXECVE Parser
 
-Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
-tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
+This script processes and enriches audit EXECVE messages for optimal SIEM analysis.
+It combines multi-part arguments, maps commands to MITRE ATT&CK techniques,
+and enriches logs with human-readable user and group names.
 
-Debian 9+ ve tüm Kali sürümlerinde çalışır.
+Version: 1.0.0
+Author: Gemini
 """
 
 import sys
 import re
-import socket
+import pwd
+import grp
 import signal
-from datetime import datetime
+from typing import Dict, List, Optional
 
-class DebianExecveParser:
+# --- MITRE ATT&CK Technique Mappings ---
+# A curated dictionary mapping techniques to common Linux commands and patterns.
+MITRE_TECHNIQUES: Dict[str, List[str]] = {
+    # T1003: OS Credential Dumping
+    "T1003": ["cat /etc/shadow", "cat /etc/gshadow", "getent shadow", "dump"],
+    # T1059: Command and Scripting Interpreter
+    "T1059": ["bash", "sh", "zsh", "python", "perl", "ruby", "php", "node"],
+    # T1070: Indicator Removal on Host
+    "T1070": ["history -c", "rm /root/.bash_history", "shred", "wipe"],
+    # T1071: Application Layer Protocol (e.g., for C2)
+    "T1071": ["curl", "wget", "ftp", "sftp"],
+    # T1082: System Information Discovery
+    "T1082": ["uname -a", "lscpu", "lshw", "dmidecode"],
+    # T1087: Account Discovery
+    "T1087": ["who", "w", "last", "lastlog", "id", "getent passwd"],
+    # T1105: Ingress Tool Transfer
+    "T1105": ["scp", "rsync", "socat", "ncat"],
+    # T1548: Abuse Elevation Control Mechanism
+    "T1548": ["sudo", "su -", "pkexec"],
+    # T1562: Impair Defenses
+    "T1562": [
+        "systemctl stop auditd",
+        "service auditd stop",
+        "auditctl -e 0",
+        "setenforce 0",
+    ],
+}
+
+
+class ExecveParser:
+    """
+    Parses, enriches, and formats audit log lines, focusing on EXECVE events.
+    """
+
     def __init__(self):
-        # Signal handler'ları ayarla
+        """Initializes patterns and signal handlers for graceful shutdown."""
+        self.execve_pattern = re.compile(r"type=EXECVE")
+        self.arg_pattern = re.compile(r'a(\d+)="([^"]*)"')
+        self.hex_arg_pattern = re.compile(r"a\d+=([0-9A-Fa-f]+)")
+        self.user_pattern = re.compile(r"\b(a?uid|gid)=(\d+)")
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Graceful shutdown için signal handler"""
+
+    def _signal_handler(self, signum: int, frame) -> None:
+        """Handles termination signals to exit gracefully."""
         sys.exit(0)
-    
-    def process_execve_line(self, line):
-        """EXECVE audit log satırını işle ve komut argümanlarını birleştir"""
-        if "type=EXECVE" not in line:
+
+    def _get_user_info(self, line: str) -> Dict[str, str]:
+        """Extracts and resolves user/group IDs from the log line."""
+        info = {}
+        for key in ["auid", "uid", "gid"]:
+            match = re.search(rf"\b{key}=(\d+)", line)
+            if match:
+                num_id = int(match.group(1))
+                if num_id == 4294967295:  # Unset ID (-1)
+                    continue
+                try:
+                    if "uid" in key:
+                        user_name = pwd.getpwuid(num_id).pw_name
+                        info[f"{key}_name"] = user_name
+                    elif "gid" in key:
+                        group_name = grp.getgrgid(num_id).gr_name
+                        info[f"{key}_name"] = group_name
+                except (KeyError, ValueError):
+                    pass  # Ignore if ID does not exist
+        return info
+
+    def _analyze_mitre_techniques(self, command: str) -> List[str]:
+        """Matches a command against the MITRE ATT&CK knowledge base."""
+        techniques_found = []
+        for tech_id, patterns in MITRE_TECHNIQUES.items():
+            for pattern in patterns:
+                if pattern in command:
+                    techniques_found.append(tech_id)
+                    break  # Move to the next technique once one pattern matches
+        return techniques_found
+
+    def _format_kv(self, data: Dict[str, str]) -> str:
+        """Formats a dictionary into a key="value" string."""
+        return " ".join([f'{key}="{value}"' for key, value in data.items()])
+
+    def parse_line(self, line: str) -> Optional[str]:
+        """
+        Processes a single log line. If it's an EXECVE event, it reconstructs
+        the command and enriches the log. Otherwise, it returns the line as is.
+        """
+        if not self.execve_pattern.search(line):
             return line
-        
-        # Proctitle satırlarını atla
-        if "proctitle=" in line or "PROCTITLE" in line:
-            return None
-        
+
         try:
-            # Tüm argüman alanlarını yakala: a0="...", a1="...", vb.
-            args_pattern = r'a(\d+)="([^"]*)"'
-            args_matches = re.findall(args_pattern, line)
-            
-            if not args_matches:
-                return line
-            
-            # Argümanları index'e göre sırala
-            args_dict = {}
-            for arg_index, arg_value in args_matches:
-                args_dict[int(arg_index)] = arg_value
-            
-            # Argümanları sıralı şekilde birleştir
-            sorted_args = sorted(args_dict.items())
-            combined_command = " ".join(arg[1] for arg in sorted_args)
-            
-            # Mevcut aX="..." alanlarını kaldır
-            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
-            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
-            
-            # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
-            return processed_line
-            
-        except Exception as e:
-            # Hata durumunda orijinal satırı döndür
+            # 1. Reconstruct the full command
+            args: Dict[int, str] = {}
+            # First, get all normally quoted arguments
+            for match in self.arg_pattern.finditer(line):
+                args[int(match.group(1))] = match.group(2)
+            # Then, get any hex-encoded arguments that might have been missed
+            for match in self.hex_arg_pattern.finditer(line):
+                key, hex_val = match.group(0).split("=", 1)
+                arg_num = int(key[1:])
+                if arg_num not in args:
+                    try:
+                        args[arg_num] = bytes.fromhex(hex_val).decode(
+                            "utf-8", "replace"
+                        )
+                    except ValueError:
+                        pass  # Ignore non-hex values
+
+            if not args:
+                return line  # Nothing to parse
+
+            full_command = " ".join(args[i] for i in sorted(args.keys()))
+
+            # 2. Clean the original line by removing argument fields
+            line = self.arg_pattern.sub("", line)
+            line = self.hex_arg_pattern.sub("", line)
+            line = re.sub(r"argc=\d+\s*", "", line).strip()
+
+            # 3. Enrich the log line
+            enrichment_data = {
+                "cmd": full_command,
+            }
+
+            # Add user/group names
+            user_info = self._get_user_info(line)
+            enrichment_data.update(user_info)
+
+            # Add MITRE techniques
+            mitre_info = self._analyze_mitre_techniques(full_command)
+            if mitre_info:
+                enrichment_data["mitre_techniques"] = ",".join(
+                    sorted(list(set(mitre_info)))
+                )
+
+            return f"{line} {self._format_kv(enrichment_data)}"
+
+        except Exception:
+            # In case of any error, return the original line to prevent data loss
             return line
-    
-    def run(self):
-        """Ana işlem döngüsü"""
+
+    def run(self) -> None:
+        """
+        Main processing loop. Reads from stdin, processes each line,
+        and prints the result to stdout.
+        """
         try:
             for line in sys.stdin:
-                line = line.strip()
-                if line:
-                    processed_line = self.process_execve_line(line)
-                    if processed_line is not None:
-                        print(processed_line, flush=True)
-        except (KeyboardInterrupt, BrokenPipeError):
-            pass
+                processed_line = self.parse_line(line.strip())
+                if processed_line:
+                    print(processed_line, flush=True)
+        except (IOError, BrokenPipeError):
+            # Gracefully exit on broken pipe (e.g., rsyslog restarts)
+            sys.exit(0)
         except Exception:
+            # Exit on any other fatal error
             sys.exit(1)
 
+
 if __name__ == "__main__":
-    parser = DebianExecveParser()
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        success = parser.run()
-        sys.exit(0 if success else 1)
-    else:
-        parser.run()
-EOF
+    parser = ExecveParser()
+    parser.run()
+EXECVE_PARSER_EOF
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"
@@ -416,6 +502,29 @@ EOF
     else
         warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
     fi
+
+    # Deploy helper scripts
+    cat > "/usr/local/bin/extract_audit_type.sh" << 'AUDIT_TYPE_EOF'
+#!/bin/bash
+# Audit log tipini çıkar
+echo "$1" | grep -oP 'type=\K\w+' | head -1
+AUDIT_TYPE_EOF
+    chmod +x "/usr/local/bin/extract_audit_type.sh"
+    chown root:root "/usr/local/bin/extract_audit_type.sh"
+
+    cat > "/usr/local/bin/extract_audit_result.sh" << 'AUDIT_RESULT_EOF'
+#!/bin/bash
+# Audit log sonucunu çıkar
+if echo "$1" | grep -q "res=success\|success=yes"; then
+    echo "success"
+else
+    echo "failed"
+fi
+AUDIT_RESULT_EOF
+    chmod +x "/usr/local/bin/extract_audit_result.sh"
+    chown root:root "/usr/local/bin/extract_audit_result.sh"
+    
+    success "Helper script'ler başarıyla deploy edildi"
 }
 
 # ===============================================================================
@@ -427,241 +536,8 @@ configure_auditd() {
     
     backup_file "$AUDIT_RULES_FILE"
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")"
-    
-    if [[ "$USE_MINIMAL_RULES" == true ]]; then
-        log "INFO" "Minimal audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Minimal Audit Rules (EPS Optimized)
--D
--b 4096
--f 1
--r 50
--a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--w /var/log/auth.log -p wa -k authentication
--w /var/log/secure -p wa -k authentication
--w /usr/bin/sudo -p x -k privileged_commands
--w /bin/su -p x -k privileged_commands
--w /usr/bin/pkexec -p x -k privileged_commands
--w /etc/passwd -p wa -k identity_files
--w /etc/shadow -p wa -k identity_files
--w /etc/sudoers -p wa -k identity_files
--w /etc/sudoers.d/ -p wa -k identity_files
--w /usr/bin/systemctl -p x -k service_control
--w /sbin/service -p x -k service_control
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/reboot -p x -k system_reboot
--w /sbin/halt -p x -k system_shutdown
--a exclude,always -F msgtype=SERVICE_START
--a exclude,always -F msgtype=SERVICE_STOP
--a exclude,always -F msgtype=BPF
--a never,exit -F exe=/usr/bin/awk
--a never,exit -F exe=/usr/bin/grep
--a never,exit -F exe=/usr/bin/sed
--a never,exit -F exe=/bin/cat
--a never,exit -F exe=/bin/ls
--a never,exit -F dir=/tmp/
--a never,exit -F dir=/var/spool/
--a never,exit -F dir=/var/tmp/
-EOF
-    else
-        log "INFO" "Standard audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Universal Debian/Kali Audit Rules v4.1.0
-# Comprehensive user behavior logging
 
-## Mevcut kuralları temizle ve yeniden başlat
--D
-
-## Buffer boyutu (üretim ortamı için optimize edilmiş)
--b 16384
-
-## Hata modu (1 = hata mesajı yazdır, 0 = sessiz)
--f 1
-
-## Rate limiting (saniyede maksimum 150 olay)
--r 150
-
-## Hataları yoksay (kural yükleme sırasında)
--i
-
-#################################
-# Kimlik ve Erişim Yönetimi (MITRE T1003, T1078)
-#################################
--w /etc/passwd -p wa -k identity_changes
--w /etc/shadow -p wa -k credential_access
--w /etc/group -p wa -k identity_changes
--w /etc/gshadow -p wa -k credential_access
--w /etc/sudoers -p wa -k privilege_escalation
--w /etc/sudoers.d/ -p wa -k privilege_escalation
-
-#################################
-# Kimlik Doğrulama ve PAM (MITRE T1556)
-#################################
--w /etc/pam.d/ -p wa -k authentication_config
--w /etc/security/ -p wa -k security_config
--w /etc/login.defs -p wa -k login_config
-
-#################################
-# SSH Yapılandırması (MITRE T1021.004)
-#################################
--w /etc/ssh/sshd_config -p wa -k ssh_config
--w /etc/ssh/ssh_config -p wa -k ssh_config
--w /root/.ssh/ -p wa -k ssh_keys
--w /home/*/.ssh/ -p wa -k ssh_keys
-
-#################################
-# Komut Çalıştırma İzleme (MITRE T1059)
-#################################
-# Root komutları (güvenlik odaklı)
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
-
-# Kullanıcı komutları (sistem kullanıcıları hariç)
--a always,exit -F arch=b64 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
--a always,exit -F arch=b32 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
-
-# Yetki yükseltme komutları (MITRE T1548)
--w /bin/su -p x -k privilege_escalation
--w /usr/bin/sudo -p x -k privilege_escalation
--w /usr/bin/pkexec -p x -k privilege_escalation
--w /usr/bin/gksu -p x -k privilege_escalation
--w /usr/bin/gksudo -p x -k privilege_escalation
-
-#################################
-# Penetration Testing Araçları (Kali özel)
-#################################
--w /usr/bin/nmap -p x -k pentest_tools
--w /usr/bin/masscan -p x -k pentest_tools
--w /usr/bin/zmap -p x -k pentest_tools
--w /usr/bin/msfconsole -p x -k pentest_tools
--w /usr/bin/meterpreter -p x -k pentest_tools
--w /usr/bin/john -p x -k pentest_tools
--w /usr/bin/hashcat -p x -k pentest_tools
--w /usr/bin/hydra -p x -k pentest_tools
--w /usr/bin/medusa -p x -k pentest_tools
--w /usr/bin/nikto -p x -k pentest_tools
--w /usr/bin/sqlmap -p x -k pentest_tools
--w /usr/bin/aircrack-ng -p x -k pentest_tools
--w /usr/bin/wireshark -p x -k pentest_tools
--w /usr/bin/tcpdump -p x -k pentest_tools
-
-#################################
-# Ağ Yapılandırması (MITRE T1016)
-#################################
--a always,exit -F arch=b64 -S sethostname -S setdomainname -k network_config
--a always,exit -F arch=b32 -S sethostname -S setdomainname -k network_config
--w /etc/hosts -p wa -k network_config
--w /etc/resolv.conf -p wa -k network_config
--w /etc/hostname -p wa -k network_config
-
-# Debian network configuration
--w /etc/network/interfaces -p wa -k network_config
--w /etc/network/interfaces.d/ -p wa -k network_config
--w /etc/systemd/network/ -p wa -k network_config
-
-#################################
-# Sistem Durumu Değişiklikleri (MITRE T1529)
-#################################
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/poweroff -p x -k system_shutdown
--w /sbin/reboot -p x -k system_shutdown
--w /sbin/halt -p x -k system_shutdown
-
-#################################
-# Dosya İzinleri ve Sahiplik (MITRE T1222)
-#################################
--a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b64 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
--a always,exit -F arch=b32 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
-
-#################################
-# Ağ Araçları ve Keşif (MITRE T1018, T1046)
-#################################
--w /usr/bin/wget -p x -k network_tools
--w /usr/bin/curl -p x -k network_tools
--w /bin/nc -p x -k network_tools
--w /usr/bin/ncat -p x -k network_tools
--w /usr/bin/netcat -p x -k network_tools
--w /usr/bin/socat -p x -k network_tools
--w /usr/bin/netdiscover -p x -k network_discovery
--w /usr/bin/arp-scan -p x -k network_discovery
--w /usr/bin/fping -p x -k network_discovery
-
-#################################
-# Uzaktan Erişim Araçları (MITRE T1021)
-#################################
--w /usr/bin/ssh -p x -k remote_access
--w /usr/bin/scp -p x -k remote_access
--w /usr/bin/sftp -p x -k remote_access
--w /usr/bin/rsync -p x -k remote_access
-
-#################################
-# Sistem Keşfi (MITRE T1082, T1087)
-#################################
--w /usr/bin/whoami -p x -k system_discovery
--w /usr/bin/id -p x -k system_discovery
--w /usr/bin/w -p x -k system_discovery
--w /usr/bin/who -p x -k system_discovery
--w /usr/bin/last -p x -k system_discovery
--w /usr/bin/lastlog -p x -k system_discovery
-
-#################################
-# Cron Jobs ve Zamanlama (MITRE T1053)
-#################################
--w /etc/cron.d/ -p wa -k scheduled_tasks
--w /etc/cron.daily/ -p wa -k scheduled_tasks
--w /etc/cron.hourly/ -p wa -k scheduled_tasks
--w /etc/cron.monthly/ -p wa -k scheduled_tasks
--w /etc/cron.weekly/ -p wa -k scheduled_tasks
--w /var/spool/cron/ -p wa -k scheduled_tasks
--w /etc/crontab -p wa -k scheduled_tasks
-
-#################################
-# Systemd Servisleri (MITRE T1543.002)
-#################################
--w /etc/systemd/system/ -p wa -k systemd_services
--w /lib/systemd/system/ -p wa -k systemd_services
--w /usr/lib/systemd/system/ -p wa -k systemd_services
-
-#################################
-# Kernel Modülleri (MITRE T1547.006)
-#################################
--a always,exit -F arch=b64 -S init_module -S delete_module -k kernel_modules
--a always,exit -F arch=b32 -S init_module -S delete_module -k kernel_modules
--w /sbin/insmod -p x -k kernel_modules
--w /sbin/rmmod -p x -k kernel_modules
--w /sbin/modprobe -p x -k kernel_modules
-
-#################################
-# Log Dosyaları (MITRE T1070.002)
-#################################
--w /var/log/auth.log -p wa -k log_modification
--w /var/log/syslog -p wa -k log_modification
--w /var/log/audit/ -p wa -k audit_log_modification
--w /var/log/kern.log -p wa -k log_modification
-
-#################################
-# Kali Linux Özel Dizinler
-#################################
--w /opt/ -p wa -k kali_tools
--w /usr/share/metasploit-framework/ -p wa -k metasploit_usage
--w /usr/share/wordlists/ -p wa -k wordlist_access
-
-#################################
-# Audit Sistemi Koruması
-#################################
--w /etc/audit/ -p wa -k audit_config
--w /sbin/auditctl -p x -k audit_tools
--w /sbin/auditd -p x -k audit_tools
-
-# Kuralları değiştirilemez yap (yüksek güvenlik ortamları için)
-# -e 2
-EOF
-    fi
+    cp "$SCRIPT_DIR/../universal/audit.rules" "$AUDIT_RULES_FILE"
     
     chmod 640 "$AUDIT_RULES_FILE"
     success "Debian/Kali Universal audit kuralları yapılandırıldı"
@@ -715,16 +591,29 @@ EOF
 
 configure_rsyslog() {
     log "INFO" "Debian/Kali için rsyslog QRadar iletimi yapılandırılıyor..."
-    
+
     backup_file "$RSYSLOG_QRADAR_CONF"
     
+    cp "$SCRIPT_DIR/../universal/99-qradar.conf" "$RSYSLOG_QRADAR_CONF"
+
     # shellcheck source=../universal/99-qradar.conf
-    sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
+    sed -i -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
-        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
+        "$RSYSLOG_QRADAR_CONF"
     
     chmod 644 "$RSYSLOG_QRADAR_CONF"
+
+    # Copy rsyslog.conf
+    backup_file "/etc/rsyslog.conf"
+    cp "$SCRIPT_DIR/../universal/rsyslog.conf" "/etc/rsyslog.conf"
+    chmod 644 "/etc/rsyslog.conf"
+
+    # Copy ignore_programs.json
+    mkdir -p "/etc/rsyslog.d"
+    backup_file "/etc/rsyslog.d/ignore_programs.json"
+    cp "$SCRIPT_DIR/../universal/ignore_programs.json" "/etc/rsyslog.d/ignore_programs.json"
+    chmod 644 "/etc/rsyslog.d/ignore_programs.json"
+
     success "Rsyslog Debian/Kali Universal yapılandırması tamamlandı"
 }
 
@@ -751,7 +640,7 @@ restart_services() {
     sleep 3
     
     # Auditd'yi başlat
-    retry_operation "auditd servisini başlatma" systemctl start auditd
+    retry_operation "auditd servisini başlatma" systemctl start "auditd"
     
     sleep 2
     
@@ -759,7 +648,7 @@ restart_services() {
     load_audit_rules
     
     # Rsyslog'u başlat
-    retry_operation "rsyslog servisini başlatma" systemctl start rsyslog
+    retry_operation "rsyslog servisini başlatma" systemctl start "rsyslog"
     
     success "Tüm Debian/Kali servisleri başarıyla yapılandırıldı ve başlatıldı"
 }
@@ -808,11 +697,17 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "Debian/Kali sistem doğrulama testleri çalıştırılıyor..."
-    
+
+    # DRY-RUN'da servis testlerini atla
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY-RUN: servis doğrulama testleri atlandı"
+        return
+    fi
+
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")
     for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service"; then
+        if detect_init && systemctl is-active --quiet "$service"; then
             success "$service servisi çalışıyor"
         else
             warn "$service servisi çalışmıyor - başlatmaya çalışılıyor..."
@@ -1007,10 +902,6 @@ main() {
 # Argument parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --minimal)
-            USE_MINIMAL_RULES=true
-            shift
-            ;;
         --dry-run)
             DRY_RUN=true
             shift

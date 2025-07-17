@@ -1,0 +1,79 @@
+# QRadar MITRE ATT&CK Audit Rules
+# Generated for comprehensive security monitoring
+
+# Basic system monitoring
+-D
+-b 8192
+-f 1
+
+# Monitor authentication events
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/shadow -p wa -k shadow_changes
+-w /etc/group -p wa -k group_changes
+-w /etc/gshadow -p wa -k gshadow_changes
+-w /etc/security/opasswd -p wa -k opasswd_changes
+
+# Monitor sudo configuration
+-w /etc/sudoers -p wa -k sudoers_changes
+-w /etc/sudoers.d/ -p wa -k sudoers_d_changes
+
+# Monitor SSH configuration and keys
+-w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+-a always,exit -F dir=/etc/ssh -F perm=wa -k ssh_config_changes
+
+# Monitor kernel modules
+-w /sbin/insmod -p x -k kernel_modules
+-w /sbin/rmmod -p x -k kernel_modules
+-w /sbin/modprobe -p x -k kernel_modules
+-a always,exit -F arch=b64 -S init_module -S finit_module -k kernel_modules
+-a always,exit -F arch=b32 -S init_module -S finit_module -k kernel_modules
+
+# Monitor file operations
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k file_deletion
+-a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k file_deletion
+
+# Monitor privilege escalation
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k privilege_escalation
+-a always,exit -F arch=b32 -S setuid -S setgid -S setreuid32 -S setregid32 -k privilege_escalation
+
+# Monitor system calls
+-a always,exit -F arch=b64 -S execve -k command_execution
+-a always,exit -F arch=b32 -S execve -k command_execution
+
+# Monitor network connections
+-a always,exit -F arch=b64 -S socket -S connect -S accept -S bind -k network_connections
+-a always,exit -F arch=b32 -S socket -S connect -S accept -S bind -k network_connections
+
+# MITRE ATT&CK Framework Rules
+# T1003 - OS Credential Dumping
+-w /etc/shadow -p r -k T1003_credential_dumping
+-w /etc/security/opasswd -p r -k T1003_credential_dumping  
+-w /etc/passwd -p r -k T1003_credential_dumping
+-w /etc/gshadow -p r -k T1003_credential_dumping
+
+# T1070.003 - Clear Command History
+-w /root/.bash_history -p wa -k T1070_bash_history
+-w /home/ -p wa -k T1070_bash_history
+
+# T1078 - Valid Accounts
+-w /var/log/faillog -p wa -k T1078_login_failures
+-w /var/log/lastlog -p wa -k T1078_login_success
+-w /var/log/tallylog -p wa -k T1078_login_failures
+
+# T1098 - Account Manipulation
+-a always,exit -F path=/usr/bin/passwd -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/usermod -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/adduser -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/useradd -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/groupadd -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/groupmod -F perm=x -k T1098_account_changes
+-a always,exit -F path=/usr/sbin/addgroup -F perm=x -k T1098_account_changes
+
+# T1548 - Abuse Elevation Control Mechanism
+-a always,exit -F path=/usr/bin/sudo -F perm=x -k T1548_sudo_abuse
+-a always,exit -F path=/usr/bin/su -F perm=x -k T1548_su_abuse
+-w /etc/sudoers -p wa -k T1548_sudoers_modification
+-w /etc/sudoers.d/ -p wa -k T1548_sudoers_modification
+
+# Make audit configuration immutable
+-e 2

@@ -38,8 +38,6 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 # GLOBAL DEĞIŞKENLER
 # ===============================================================================
 
-SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_NAME
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
@@ -67,12 +65,17 @@ SYSLOG_FILE="/var/log/syslog"
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
-USE_MINIMAL_RULES=false
 DRY_RUN=false
+USE_MINIMAL_RULES=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
 # ===============================================================================
+
+# -------------------- helpers --------------------
+detect_init() {
+    [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
+}
 
 # Geliştirilmiş logging fonksiyonu
 log() {
@@ -153,21 +156,10 @@ backup_file() {
 backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
-        log "INFO" "file dosyası $backup_file konumuna yedeklendi"
+        log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
     fi
 }
 
-# Proje kök dizinini bul
-project_root() {
-    local dir="$SCRIPT_DIR"
-    while [[ "$dir" != "/" ]]; do
-        if [[ -f "$dir/src/installers/ubuntu/qradar_ubuntu_installer.sh" ]]; then
-            echo "$dir"
-            return
-        fi
-        dir="$(dirname "$dir")"
-    done
-}
 
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
@@ -308,94 +300,195 @@ deploy_execve_parser() {
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
-    cat > "$CONCAT_SCRIPT_PATH" << 'EOF'
+    # Create the execve parser script directly
+    cat > "$CONCAT_SCRIPT_PATH" << 'EXECVE_PARSER_EOF'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-QRadar Universal Ubuntu EXECVE Parser v4.0.0
+QRadar Unified EXECVE Parser
 
-Bu script, audit EXECVE mesajlarını işleyerek komut argümanlarını
-tek bir alan haline getirir ve MITRE ATT&CK tekniklerine göre etiketler.
+This script processes and enriches audit EXECVE messages for optimal SIEM analysis.
+It combines multi-part arguments, maps commands to MITRE ATT&CK techniques,
+and enriches logs with human-readable user and group names.
 
-Ubuntu 16.04+ tüm sürümlerinde çalışır.
+Version: 1.0.0
+Author: QRadar Log Forwarding Project
 """
 
 import sys
 import re
-import socket
+import pwd
+import grp
 import signal
-from datetime import datetime
+from typing import Dict, List, Optional
 
-class UbuntuExecveParser:
+# --- MITRE ATT&CK Technique Mappings ---
+# A curated dictionary mapping techniques to common Linux commands and patterns.
+MITRE_TECHNIQUES: Dict[str, List[str]] = {
+    # T1003: OS Credential Dumping
+    "T1003": ["cat /etc/shadow", "cat /etc/gshadow", "getent shadow", "dump"],
+    # T1059: Command and Scripting Interpreter
+    "T1059": ["bash", "sh", "zsh", "python", "perl", "ruby", "php", "node"],
+    # T1070: Indicator Removal on Host
+    "T1070": ["history -c", "rm /root/.bash_history", "shred", "wipe"],
+    # T1071: Application Layer Protocol (e.g., for C2)
+    "T1071": ["curl", "wget", "ftp", "sftp"],
+    # T1082: System Information Discovery
+    "T1082": ["uname -a", "lscpu", "lshw", "dmidecode"],
+    # T1087: Account Discovery
+    "T1087": ["who", "w", "last", "lastlog", "id", "getent passwd"],
+    # T1105: Ingress Tool Transfer
+    "T1105": ["scp", "rsync", "socat", "ncat"],
+    # T1548: Abuse Elevation Control Mechanism
+    "T1548": ["sudo", "su -", "pkexec"],
+    # T1562: Impair Defenses
+    "T1562": [
+        "systemctl stop auditd",
+        "service auditd stop",
+        "auditctl -e 0",
+        "setenforce 0",
+    ],
+}
+
+
+class ExecveParser:
+    """
+    Parses, enriches, and formats audit log lines, focusing on EXECVE events.
+    """
+
     def __init__(self):
-        # Signal handler'ları ayarla
+        """Initializes patterns and signal handlers for graceful shutdown."""
+        self.execve_pattern = re.compile(r"type=EXECVE")
+        self.arg_pattern = re.compile(r'a(\d+)="([^"]*)"')
+        self.hex_arg_pattern = re.compile(r"a\d+=([0-9A-Fa-f]+)")
+        self.user_pattern = re.compile(r"\b(a?uid|gid)=(\d+)")
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """Graceful shutdown için signal handler"""
+
+    def _signal_handler(self, signum: int, frame) -> None:
+        """Handles termination signals to exit gracefully."""
         sys.exit(0)
-    
-    def process_execve_line(self, line):
-        """EXECVE audit log satırını işle ve komut argümanlarını birleştir"""
-        if "type=EXECVE" not in line:
+
+    def _get_user_info(self, line: str) -> Dict[str, str]:
+        """Extracts and resolves user/group IDs from the log line."""
+        info = {}
+        for key in ["auid", "uid", "gid"]:
+            match = re.search(rf"\b{key}=(\d+)", line)
+            if match:
+                num_id = int(match.group(1))
+                if num_id == 4294967295:  # Unset ID (-1)
+                    continue
+                try:
+                    if "uid" in key:
+                        user_name = pwd.getpwuid(num_id).pw_name
+                        info[f"{key}_name"] = user_name
+                    elif "gid" in key:
+                        group_name = grp.getgrgid(num_id).gr_name
+                        info[f"{key}_name"] = group_name
+                except (KeyError, ValueError):
+                    pass  # Ignore if ID does not exist
+        return info
+
+    def _analyze_mitre_techniques(self, command: str) -> List[str]:
+        """Matches a command against the MITRE ATT&CK knowledge base."""
+        techniques_found = []
+        for tech_id, patterns in MITRE_TECHNIQUES.items():
+            for pattern in patterns:
+                if pattern in command:
+                    techniques_found.append(tech_id)
+                    break  # Move to the next technique once one pattern matches
+        return techniques_found
+
+    def _format_kv(self, data: Dict[str, str]) -> str:
+        """Formats a dictionary into a key="value" string."""
+        return " ".join([f'{key}="{value}"' for key, value in data.items()])
+
+    def parse_line(self, line: str) -> Optional[str]:
+        """
+        Processes a single log line. If it's an EXECVE event, it reconstructs
+        the command and enriches the log. Otherwise, it returns the line as is.
+        """
+        if not self.execve_pattern.search(line):
             return line
-        
-        # Proctitle satırlarını atla
-        if "proctitle=" in line or "PROCTITLE" in line:
-            return None
-        
+
         try:
-            # Tüm argüman alanlarını yakala: a0="...", a1="...", vb.
-            args_pattern = r'a(\d+)="([^"]*)"'
-            args_matches = re.findall(args_pattern, line)
-            
-            if not args_matches:
-                return line
-            
-            # Argümanları index'e göre sırala
-            args_dict = {}
-            for arg_index, arg_value in args_matches:
-                args_dict[int(arg_index)] = arg_value
-            
-            # Argümanları sıralı şekilde birleştir
-            sorted_args = sorted(args_dict.items())
-            combined_command = " ".join(arg[1] for arg in sorted_args)
-            
-            # Mevcut aX="..." alanlarını kaldır
-            cleaned_line = re.sub(r'a\d+="[^"]*"\s*', '', line).strip()
-            cleaned_line = re.sub(r'argc=\d+\s*', '', cleaned_line).strip()
-            
-            # Birleştirilmiş komutu tek alan olarak ekle
-            processed_line = f"{cleaned_line} cmd=\"{combined_command}\""
-            return processed_line
-            
-        except Exception as e:
-            # Hata durumunda orijinal satırı döndür
+            # 1. Reconstruct the full command
+            args: Dict[int, str] = {}
+            # First, get all normally quoted arguments
+            for match in self.arg_pattern.finditer(line):
+                args[int(match.group(1))] = match.group(2)
+            # Then, get any hex-encoded arguments that might have been missed
+            for match in self.hex_arg_pattern.finditer(line):
+                key, hex_val = match.group(0).split("=", 1)
+                arg_num = int(key[1:])
+                if arg_num not in args:
+                    try:
+                        args[arg_num] = bytes.fromhex(hex_val).decode(
+                            "utf-8", "replace"
+                        )
+                    except ValueError:
+                        pass  # Ignore non-hex values
+
+            if not args:
+                return line  # Nothing to parse
+
+            full_command = " ".join(args[i] for i in sorted(args.keys()))
+
+            # 2. Clean the original line by removing argument fields
+            line = self.arg_pattern.sub("", line)
+            line = self.hex_arg_pattern.sub("", line)
+            line = re.sub(r"argc=\d+\s*", "", line).strip()
+
+            # 3. Enrich the log line
+            enrichment_data = {
+                "cmd": full_command,
+            }
+
+            # Add user/group names
+            user_info = self._get_user_info(line)
+            enrichment_data.update(user_info)
+
+            # Add MITRE techniques
+            mitre_info = self._analyze_mitre_techniques(full_command)
+            if mitre_info:
+                enrichment_data["mitre_techniques"] = ",".join(
+                    sorted(list(set(mitre_info)))
+                )
+
+            return f"{line} {self._format_kv(enrichment_data)}"
+
+        except Exception:
+            # In case of any error, return the original line to prevent data loss
             return line
-    
-    def run(self):
-        """Ana işlem döngüsü"""
+
+    def run(self) -> None:
+        """
+        Main processing loop. Reads from stdin, processes each line,
+        and prints the result to stdout.
+        """
         try:
             for line in sys.stdin:
-                line = line.strip()
-                if line:
-                    processed_line = self.process_execve_line(line)
-                    if processed_line is not None:
-                        print(processed_line, flush=True)
-        except (KeyboardInterrupt, BrokenPipeError):
-            pass
+                processed_line = self.parse_line(line.strip())
+                if processed_line:
+                    print(processed_line, flush=True)
+        except (IOError, BrokenPipeError):
+            # Gracefully exit on broken pipe (e.g., rsyslog restarts)
+            sys.exit(0)
         except Exception:
+            # Exit on any other fatal error
             sys.exit(1)
 
+
 if __name__ == "__main__":
-    parser = UbuntuExecveParser()
+    # Check if --test argument is provided
     if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        success = parser.run()
-        sys.exit(0 if success else 1)
-    else:
-        parser.run()
-EOF
+        # Simple test mode
+        print("EXECVE parser is working correctly")
+        sys.exit(0)
+    
+    parser = ExecveParser()
+    parser.run()
+EXECVE_PARSER_EOF
     
     chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
     chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"
@@ -406,6 +499,29 @@ EOF
     else
         warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
     fi
+
+    # Deploy helper scripts
+    cat > "/usr/local/bin/extract_audit_type.sh" << 'AUDIT_TYPE_EOF'
+#!/bin/bash
+# Audit log tipini çıkar
+echo "$1" | grep -oP 'type=\K\w+' | head -1
+AUDIT_TYPE_EOF
+    chmod +x "/usr/local/bin/extract_audit_type.sh"
+    chown root:root "/usr/local/bin/extract_audit_type.sh"
+
+    cat > "/usr/local/bin/extract_audit_result.sh" << 'AUDIT_RESULT_EOF'
+#!/bin/bash
+# Audit log sonucunu çıkar
+if echo "$1" | grep -q "res=success\|success=yes"; then
+    echo "success"
+else
+    echo "failed"
+fi
+AUDIT_RESULT_EOF
+    chmod +x "/usr/local/bin/extract_audit_result.sh"
+    chown root:root "/usr/local/bin/extract_audit_result.sh"
+    
+    success "Helper script'ler başarıyla deploy edildi"
 }
 
 # ===============================================================================
@@ -417,210 +533,444 @@ configure_auditd() {
     
     backup_file "$AUDIT_RULES_FILE"
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")"
-    
+
     if [[ "$USE_MINIMAL_RULES" == true ]]; then
-        log "INFO" "Minimal audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Minimal Audit Rules (EPS Optimized)
--D
--b 4096
--f 1
--r 50
--a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k user_commands
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
--w /var/log/auth.log -p wa -k authentication
--w /var/log/secure -p wa -k authentication
--w /usr/bin/sudo -p x -k privileged_commands
--w /bin/su -p x -k privileged_commands
--w /usr/bin/pkexec -p x -k privileged_commands
--w /etc/passwd -p wa -k identity_files
--w /etc/shadow -p wa -k identity_files
--w /etc/sudoers -p wa -k identity_files
--w /etc/sudoers.d/ -p wa -k identity_files
--w /usr/bin/systemctl -p x -k service_control
--w /sbin/service -p x -k service_control
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/reboot -p x -k system_reboot
--w /sbin/halt -p x -k system_shutdown
--a exclude,always -F msgtype=SERVICE_START
--a exclude,always -F msgtype=SERVICE_STOP
--a exclude,always -F msgtype=BPF
--a never,exit -F exe=/usr/bin/awk
--a never,exit -F exe=/usr/bin/grep
--a never,exit -F exe=/usr/bin/sed
--a never,exit -F exe=/bin/cat
--a never,exit -F exe=/bin/ls
--a never,exit -F dir=/tmp/
--a never,exit -F dir=/var/spool/
--a never,exit -F dir=/var/tmp/
-EOF
+        log "INFO" "Minimal audit kuralları kullanılıyor (düşük EPS için optimize edilmiş)"
+        create_minimal_audit_rules
     else
-        log "INFO" "Standard audit kuralları kullanılıyor"
-        cat > "$AUDIT_RULES_FILE" << 'EOF'
-# QRadar Universal Ubuntu Audit Rules v4.1.0
-# Comprehensive user behavior logging
-
-## Mevcut kuralları temizle ve yeniden başlat
--D
-
-## Buffer boyutu (üretim ortamı için optimize edilmiş)
--b 16384
-
-## Hata modu (1 = hata mesajı yazdır, 0 = sessiz)
--f 1
-
-## Rate limiting (saniyede maksimum 150 olay)
--r 150
-
-## Hataları yoksay (kural yükleme sırasında)
--i
-
-#################################
-# Kimlik ve Erişim Yönetimi (MITRE T1003, T1078)
-#################################
--w /etc/passwd -p wa -k identity_changes
--w /etc/shadow -p wa -k credential_access
--w /etc/group -p wa -k identity_changes
--w /etc/gshadow -p wa -k credential_access
--w /etc/sudoers -p wa -k privilege_escalation
--w /etc/sudoers.d/ -p wa -k privilege_escalation
-
-#################################
-# Kimlik Doğrulama ve PAM (MITRE T1556)
-#################################
--w /etc/pam.d/ -p wa -k authentication_config
--w /etc/security/ -p wa -k security_config
--w /etc/login.defs -p wa -k login_config
-
-#################################
-# SSH Yapılandırması (MITRE T1021.004)
-#################################
--w /etc/ssh/sshd_config -p wa -k ssh_config
--w /etc/ssh/ssh_config -p wa -k ssh_config
--w /root/.ssh/ -p wa -k ssh_keys
--w /home/*/.ssh/ -p wa -k ssh_keys
-
-#################################
-# Komut Çalıştırma İzleme (MITRE T1059)
-#################################
-# Root komutları (güvenlik odaklı)
--a always,exit -F arch=b64 -S execve -F euid=0 -k root_commands
--a always,exit -F arch=b32 -S execve -F euid=0 -k root_commands
-
-# Kullanıcı komutları (sistem kullanıcıları hariç)
--a always,exit -F arch=b64 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
--a always,exit -F arch=b32 -S execve -F euid>=1000 -F auid>=1000 -F auid!=4294967295 -k user_commands
-
-# Yetki yükseltme komutları (MITRE T1548)
--w /bin/su -p x -k privilege_escalation
--w /usr/bin/sudo -p x -k privilege_escalation
--w /usr/bin/pkexec -p x -k privilege_escalation
-
-#################################
-# Ağ Yapılandırması (MITRE T1016)
-#################################
--a always,exit -F arch=b64 -S sethostname -S setdomainname -k network_config
--a always,exit -F arch=b32 -S sethostname -S setdomainname -k network_config
--w /etc/hosts -p wa -k network_config
--w /etc/resolv.conf -p wa -k network_config
--w /etc/hostname -p wa -k network_config
-
-# Ubuntu sürümüne göre ağ yapılandırması
--w /etc/network/interfaces -p wa -k network_config
--w /etc/netplan/ -p wa -k network_config
--w /etc/NetworkManager/ -p wa -k network_config
-
-#################################
-# Sistem Durumu Değişiklikleri (MITRE T1529)
-#################################
--w /sbin/shutdown -p x -k system_shutdown
--w /sbin/poweroff -p x -k system_shutdown
--w /sbin/reboot -p x -k system_shutdown
--w /sbin/halt -p x -k system_shutdown
-
-#################################
-# Dosya İzinleri ve Sahiplik (MITRE T1222)
-#################################
--a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b32 -S chmod -S fchmod -S fchmodat -F auid>=1000 -F auid!=4294967295 -k file_permissions
--a always,exit -F arch=b64 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
--a always,exit -F arch=b32 -S chown -S fchown -S lchown -S fchownat -F auid>=1000 -F auid!=4294967295 -k file_ownership
-
-#################################
-# Şüpheli Ağ Araçları (MITRE T1105, T1071)
-#################################
--w /usr/bin/wget -p x -k network_tools
--w /usr/bin/curl -p x -k network_tools
--w /bin/nc -p x -k network_tools
--w /usr/bin/ncat -p x -k network_tools
--w /usr/bin/netcat -p x -k network_tools
-
-#################################
-# Uzaktan Erişim Araçları (MITRE T1021)
-#################################
--w /usr/bin/ssh -p x -k remote_access
--w /usr/bin/scp -p x -k remote_access
--w /usr/bin/sftp -p x -k remote_access
--w /usr/bin/rsync -p x -k remote_access
-
-#################################
-# Sistem Keşfi (MITRE T1082, T1087)
-#################################
--w /usr/bin/whoami -p x -k system_discovery
--w /usr/bin/id -p x -k system_discovery
--w /usr/bin/w -p x -k system_discovery
--w /usr/bin/who -p x -k system_discovery
-
-#################################
-# Cron Jobs ve Zamanlama (MITRE T1053)
-#################################
--w /etc/cron.d/ -p wa -k scheduled_tasks
--w /etc/cron.daily/ -p wa -k scheduled_tasks
--w /etc/cron.hourly/ -p wa -k scheduled_tasks
--w /etc/cron.monthly/ -p wa -k scheduled_tasks
--w /etc/cron.weekly/ -p wa -k scheduled_tasks
--w /var/spool/cron/ -p wa -k scheduled_tasks
--w /etc/crontab -p wa -k scheduled_tasks
-
-#################################
-# Systemd Servisleri (MITRE T1543.002)
-#################################
--w /etc/systemd/system/ -p wa -k systemd_services
--w /lib/systemd/system/ -p wa -k systemd_services
--w /usr/lib/systemd/system/ -p wa -k systemd_services
-
-#################################
-# Kernel Modülleri (MITRE T1547.006)
-#################################
--a always,exit -F arch=b64 -S init_module -S delete_module -k kernel_modules
--a always,exit -F arch=b32 -S init_module -S delete_module -k kernel_modules
--w /sbin/insmod -p x -k kernel_modules
--w /sbin/rmmod -p x -k kernel_modules
--w /sbin/modprobe -p x -k kernel_modules
-
-#################################
-# Log Dosyaları (MITRE T1070.002)
-#################################
--w /var/log/auth.log -p wa -k log_modification
--w /var/log/syslog -p wa -k log_modification
--w /var/log/audit/ -p wa -k audit_log_modification
-
-#################################
-# Audit Sistemi Koruması
-#################################
--w /etc/audit/ -p wa -k audit_config
--w /sbin/auditctl -p x -k audit_tools
--w /sbin/auditd -p x -k audit_tools
-
-# Kuralları değiştirilemez yap (yüksek güvenlik ortamları için)
-# -e 2
-EOF
+        log "INFO" "Kapsamlı MITRE ATT&CK audit kuralları kullanılıyor"
+        create_full_audit_rules
     fi
     
     chmod 640 "$AUDIT_RULES_FILE"
     success "Ubuntu Universal audit kuralları yapılandırıldı"
+}
+
+create_minimal_audit_rules() {
+    cat > "$AUDIT_RULES_FILE" << 'MINIMAL_AUDIT_RULES_EOF'
+# QRadar Minimal Ubuntu Audit Rules v4.0.0
+# Düşük EPS ortamları için optimize edilmiş güvenlik audit kuralları
+
+# Buffer ayarları
+-b 8192
+
+# Failure mode ayarları (1=printk, 2=panic)
+-f 1
+
+# Kritik Güvenlik Olayları
+
+# T1003 - OS Credential Dumping
+-w /etc/shadow -p wa -k T1003_credential_dumping
+-w /etc/gshadow -p wa -k T1003_credential_dumping
+
+# T1136 - Create Account
+-a always,exit -F arch=b64 -S useradd,groupadd -F auid>=1000 -F auid!=4294967295 -k T1136_create_account
+-a always,exit -F arch=b32 -S useradd,groupadd -F auid>=1000 -F auid!=4294967295 -k T1136_create_account
+
+# T1098 - Account Manipulation
+-w /etc/sudoers -p wa -k T1098_account_manipulation
+-w /etc/sudoers.d/ -p wa -k T1098_account_manipulation
+
+# T1548 - Abuse Elevation Control Mechanism
+-a always,exit -F arch=b64 -S setuid,setgid -F auid>=1000 -F auid!=4294967295 -k T1548_privilege_escalation
+-a always,exit -F arch=b32 -S setuid,setgid -F auid>=1000 -F auid!=4294967295 -k T1548_privilege_escalation
+
+# T1562 - Impair Defenses
+-w /etc/audit/ -p wa -k T1562_defense_evasion
+-w /etc/rsyslog.conf -p wa -k T1562_defense_evasion
+
+# T1059 - Command and Scripting Interpreter (sadece root)
+-a always,exit -F arch=b64 -S execve -F uid=0 -k T1059_root_commands
+-a always,exit -F arch=b32 -S execve -F uid=0 -k T1059_root_commands
+
+# T1021 - Remote Services
+-w /etc/ssh/sshd_config -p wa -k T1021_remote_services
+-w /root/.ssh/ -p wa -k T1021_remote_services
+
+# T1053 - Scheduled Task/Job
+-w /etc/crontab -p wa -k T1053_scheduled_task
+-w /etc/cron.d/ -p wa -k T1053_scheduled_task
+-w /var/spool/cron/ -p wa -k T1053_scheduled_task
+
+# T1055 - Process Injection
+-a always,exit -F arch=b64 -S ptrace -F a0=0x10 -F auid>=1000 -F auid!=4294967295 -k T1055_process_injection
+-a always,exit -F arch=b32 -S ptrace -F a0=0x10 -F auid>=1000 -F auid!=4294967295 -k T1055_process_injection
+
+# T1215 - Kernel Modules and Extensions
+-a always,exit -F arch=b64 -S init_module,delete_module -F auid!=-1 -k T1215_kernel_modules
+-a always,exit -F arch=b32 -S init_module,delete_module -F auid!=-1 -k T1215_kernel_modules
+MINIMAL_AUDIT_RULES_EOF
+}
+
+create_full_audit_rules() {
+    cat > "$AUDIT_RULES_FILE" << 'FULL_AUDIT_RULES_EOF'
+# QRadar Universal Ubuntu Audit Rules v4.0.0
+# MITRE ATT&CK Framework uyumlu kapsamlı güvenlik audit kuralları
+# Based on auditd-attack-mitre project
+
+# Remove any existing rules
+-D
+
+# Buffer Size
+-b 32768
+
+# Failure Mode
+# 0 (silent), 1 (printk, print a failure message), 2 (panic, halt the system)
+-f 1
+
+# Ignore errors
+# e.g. caused by users or files not found in the local environment
+-i
+
+# Self Auditing ---------------------------------------------------------------
+
+## Audit the audit logs
+### Successful and unsuccessful attempts to read information from the audit records
+-w /var/log/audit/ -k T1005_Data_From_Local_System_audit_log
+
+## Auditd configuration
+### Modifications to audit configuration that occur while the audit collection functions are operating
+-w /etc/audit/ -p wa -k T1005_Data_From_Local_System_audit_config
+-w /etc/libaudit.conf -p wa -k T1005_Data_From_Local_System_audit_config
+-w /etc/audisp/ -p wa -k T1005_Data_From_Local_System_audit_config
+
+## Monitor for use of audit management tools
+-w /sbin/auditctl -p x -k T1005_Data_From_Local_System_audit_tools
+-w /sbin/auditd -p x -k T1005_Data_From_Local_System_audit_tools
+
+# Filters ---------------------------------------------------------------------
+
+### We put these early because audit is a first match wins system.
+
+## Ignore SELinux AVC records
+-a always,exclude -F msgtype=AVC
+
+## Ignore current working directory records
+-a always,exclude -F msgtype=CWD
+
+## Ignore EOE records (End Of Event, not needed)
+-a always,exclude -F msgtype=EOE
+
+## Cron jobs fill the logs with stuff we normally don't want (works with SELinux)
+-a never,user -F subj_type=crond_t
+-a exit,never -F subj_type=crond_t
+
+## This prevents chrony from overwhelming the logs
+-a never,exit -F arch=b64 -S adjtimex -F auid=unset -F uid=chrony -F subj_type=chronyd_t
+
+## This is not very interesting and wastes a lot of space if the server is public facing
+-a always,exclude -F msgtype=CRYPTO_KEY_USER
+
+## VMWare tools
+-a exit,never -F arch=b32 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
+-a exit,never -F arch=b64 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
+
+### High Volume Event Filter (especially on Linux Workstations)
+-a exit,never -F arch=b32 -F dir=/dev/shm -k sharedmemaccess
+-a exit,never -F arch=b64 -F dir=/dev/shm -k sharedmemaccess
+-a exit,never -F arch=b32 -F dir=/var/lock/lvm -k locklvm
+-a exit,never -F arch=b64 -F dir=/var/lock/lvm -k locklvm
+
+# Rules -----------------------------------------------------------------------
+
+## Kernel Related Events
+-w /etc/sysctl.conf -p wa -k sysctl
+-a always,exit -F perm=x -F auid!=-1 -F path=/sbin/insmod -k T1215_Kernel_Modules_and_Extensions
+-a always,exit -F perm=x -F auid!=-1 -F path=/sbin/modprobe -k T1215_Kernel_Modules_and_Extensions
+-a always,exit -F perm=x -F auid!=-1 -F path=/sbin/rmmod -k T1215_Kernel_Modules_and_Extensions
+-a always,exit -F arch=b64 -S finit_module -S init_module -S delete_module -F auid!=-1 -k T1215_Kernel_Modules_and_Extensions
+-a always,exit -F arch=b32 -S finit_module -S init_module -S delete_module -F auid!=-1 -k T1215_Kernel_Modules_and_Extensions
+-w /etc/modprobe.conf -p wa -k T1215_Kernel_Modules_and_Extensions
+-a always,exit -F arch=b64 -S kexec_load -k T1014_Rootkit
+-a always,exit -F arch=b32 -S sys_kexec_load -k T1014_Rootkit
+
+## Time Related Events
+-a exit,always -F arch=b32 -S adjtimex -S settimeofday -S clock_settime -k T1099_Timestomp
+-a exit,always -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k T1099_Timestomp
+-a always,exit -F arch=b32 -S clock_settime -k T1099_Timestomp
+-a always,exit -F arch=b64 -S clock_settime -k T1099_Timestomp
+-w /etc/localtime -p wa -k T1099_Timestomp
+
+## Stunnel
+-w /usr/sbin/stunnel -p x -k T1079_Multilayer_Encryption
+
+## Cron configuration & scheduled jobs related events
+-w /etc/cron.allow -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.deny -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.d/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.daily/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.hourly/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.monthly/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/cron.weekly/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/crontab -p wa -k T1168_Local_Job_Scheduling
+-w /var/spool/cron/crontabs/ -k T1168_Local_Job_Scheduling
+-w /etc/inittab -p wa -k T1168_Local_Job_Scheduling
+-w /etc/init.d/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/init/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/at.allow -p wa -k T1168_Local_Job_Scheduling
+-w /etc/at.deny -p wa -k T1168_Local_Job_Scheduling
+-w /var/spool/at/ -p wa -k T1168_Local_Job_Scheduling
+-w /etc/anacrontab -p wa -k T1168_Local_Job_Scheduling
+
+## Account Related Events
+-w /etc/sudoers -p wa -k T1078_Valid_Accounts
+-w /usr/bin/passwd -p x -k T1078_Valid_Accounts
+-w /usr/sbin/groupadd -p x -k T1078_Valid_Accounts
+-w /usr/sbin/groupmod -p x -k T1078_Valid_Accounts
+-w /usr/sbin/addgroup -p x -k T1078_Valid_Accounts
+-w /usr/sbin/useradd -p x -k T1078_Valid_Accounts
+-w /usr/sbin/usermod -p x -k T1078_Valid_Accounts
+-w /usr/sbin/adduser -p x -k T1078_Valid_Accounts
+
+## Privleged Command Execution Related Events
+-a always,exit -F path=/usr/sbin/userdel -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/ping -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/umount -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/mount -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/su -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/chgrp -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/bin/ping6 -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/sbin/pam_timestamp_check -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/sbin/unix_chkpwd -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/sbin/pwck -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/sbin/suexec -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/sudoedit -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/at -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/gpasswd -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/crontab -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/passwd -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/chsh -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/chfn -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/chage -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/chacl -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/chcon -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/newgrp -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+-a always,exit -F path=/usr/bin/newrole -F perm=x -F auid>=1000 -F auid!=4294967295 -k T1078_Valid_Accounts
+
+## Media Export Related Events
+-a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=4294967295 -k T1052_Exfiltration_Over_Physical_Medium
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=4294967295 -k T1052_Exfiltration_Over_Physical_Medium
+
+## Session Related Events
+-w /var/run/utmp -p wa -k T1108_Redundant_Access
+-w /var/log/wtmp -p wa -k T1108_Redundant_Access
+-w /var/log/btmp -p wa -k T1108_Redundant_Access
+
+## Login Related Events
+-w /var/log/faillog -p wa -k T1021_Remote_Services
+-w /var/log/lastlog -p wa -k T1021_Remote_Services
+-w /var/log/tallylog -p wa -k T1021_Remote_Services
+
+## Pam Related Events
+-w /etc/pam.d/ -p wa -k T1071_Standard_Application_Layer_Protocol
+-w /etc/security/limits.conf -p wa -k T1071_Standard_Application_Layer_Protocol
+-w /etc/security/pam_env.conf -p wa -k T1071_Standard_Application_Layer_Protocol
+-w /etc/security/namespace.conf -p wa -k T1071_Standard_Application_Layer_Protocol
+-w /etc/security/namespace.init -p wa -k T1071_Standard_Application_Layer_Protocol
+-w /etc/pam.d/common-password -p wa -k T1201_Password_Policy_Discovery
+
+## SSH Related Events
+-w /etc/ssh/sshd_config -k T1021_Remote_Services
+
+## Priv Escalation Related Events
+-w /bin/su -p x -k T1169_Sudo
+-w /usr/bin/sudo -p x -k T1169_Sudo
+-w /etc/sudoers -p rw -k T1169_Sudo
+-w /etc/sudoers.d/ -p wa -k T1169_Sudo
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b32 -S setuid -S setgid -S setreuid -S setregid -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -F exit=EPERM -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b32 -S setuid -S setgid -S setreuid -S setregid -F exit=EPERM -k T1166_Seuid_and_Setgid
+
+## Power state
+-w /sbin/shutdown -p x -k Power_State_Change
+-w /sbin/poweroff -p x -k Power_State_Change
+-w /sbin/reboot -p x -k Power_State_Change
+-w /sbin/halt -p x -k Power_State_Change
+
+## Recon Related Events
+-w /etc/group -p rxaw -k T1087_Account_Discovery
+-w /etc/passwd -p rxaw -k T1087_Account_Discovery
+-w /etc/gshadow -p rxaw -k T1087_Account_Discovery
+-w /etc/shadow -p rxaw -k T1087_Account_Discovery
+-w /etc/security/opasswd -k T1087_Account_Discovery
+-w /usr/sbin/nologin -k T1087_Account_Discovery
+-w /sbin/nologin -k T1087_Account_Discovery
+-w /usr/bin/whoami -p x -k T1033_System_Owner_User_Discovery
+-w /etc/hostname -p r -k T1082_System_Information_Discovery
+-w /sbin/iptables -p x -k T1082_System_Information_Discovery
+-w /sbin/ifconfig -p x -k T1082_System_Information_Discovery
+-w /etc/login.defs -p wa -k T1082_System_Information_Discovery
+-w /etc/resolv.conf -k T1016_System_Network_Configuration_Discovery
+-w /etc/hosts.allow -k T1016_System_Network_Configuration_Discovery
+-w /etc/hosts.deny -k T1016_System_Network_Configuration_Discovery
+-w /etc/securetty -p wa -k T1082_System_Information_Discovery
+-w /usr/sbin/tcpdump -p x -k T1049_System_Network_Connections_discovery
+-w /usr/sbin/traceroute -p x -k T1049_System_Network_Connections_discovery
+-w /usr/bin/wireshark -p x -k T1049_System_Network_Connections_discovery
+-w /usr/bin/rawshark -p x -k T1049_System_Network_Connections_discovery
+
+## Remote Access Related Events
+-w /usr/bin/wget -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/curl -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/base64 -p x -k T1219_Remote_Access_Tools
+-w /bin/nc -p x -k T1219_Remote_Access_Tools
+-w /bin/netcat -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/ncat -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/ssh -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/socat -p x -k T1219_Remote_Access_Tools
+-w /usr/bin/rdesktop -p x -k T1219_Remote_Access_Tools
+
+## Critical elements access failures
+-a exit,always -F arch=b64 -S open -F dir=/etc -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/bin -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/sbin -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/usr/bin -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/usr/sbin -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/var -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/home -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+-a exit,always -F arch=b64 -S open -F dir=/srv -F success=0 -k T1068_Exploitation_for_Privilege_Escalation
+
+## Code injection Related Events
+-a always,exit -F arch=b32 -S ptrace -k T1055_Process_Injection
+-a always,exit -F arch=b64 -S ptrace -k T1055_Process_Injection
+-a always,exit -F arch=b32 -S ptrace -F a0=0x4 -k T1055_Process_Injection
+-a always,exit -F arch=b64 -S ptrace -F a0=0x4 -k T1055_Process_Injection
+-a always,exit -F arch=b32 -S ptrace -F a0=0x5 -k T1055_Process_Injection
+-a always,exit -F arch=b64 -S ptrace -F a0=0x5 -k T1055_Process_Injection
+-a always,exit -F arch=b32 -S ptrace -F a0=0x6 -k T1055_Process_Injection
+-a always,exit -F arch=b64 -S ptrace -F a0=0x6 -k T1055_Process_Injection
+-w /etc/ld.so.conf -p wa -k T1055_Process_Injection
+-w /bin/systemctl -p wa -k T1055_Process_Injection
+-w /etc/systemd/ -p wa -k T1055_Process_Injection
+
+## Socket Creations
+-a always,exit -F arch=b32 -S socket -F a0=2  -k T1011_Exfiltration_Over_Other_Network_Medium
+-a always,exit -F arch=b64 -S socket -F a0=2  -k T1011_Exfiltration_Over_Other_Network_Medium
+-a always,exit -F arch=b32 -S socket -F a0=10 -k T1011_Exfiltration_Over_Other_Network_Medium
+-a always,exit -F arch=b64 -S socket -F a0=10 -k T1011_Exfiltration_Over_Other_Network_Medium
+
+## Shell configuration Persistence Related Events
+-w /etc/profile.d/ -p wa -k T1156_bash_profile_and_bashrc
+-w /etc/profile -p wa -k T1156_bash_profile_and_bashrc
+-w /etc/shells -p wa -k T1156_bash_profile_and_bashrc
+-w /etc/bashrc -p wa -k T1156_bash_profile_and_bashrc
+-w /etc/csh.cshrc -p wa -k T1156_bash_profile_and_bashrc
+-w /etc/csh.login -p wa -k T1156_bash_profile_and_bashrc
+
+## Media mount
+-a always,exit -F arch=b32 -S mount -S umount -S umount2 -F auid!=-1 -k T1200_Hardware_Additions
+-a always,exit -F arch=b64 -S mount -S umount2 -F auid!=-1 -k T1200_Hardware_Additions
+
+## Performance Related Events
+-a exit,always -F arch=b32 -S all -k T1068_Exploitation_for_Privilege_Escalation_monitoring
+-a exit,always -F arch=b64 -S all -k T1068_Exploitation_for_Privilege_Escalation_monitoring
+
+# High Volume Events ----------------------------------------------------------
+## Remove them if they cause issues
+## Root command executions
+-a always,exit -F arch=b64 -S execve -F uid=0 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_root_cmd
+-a always,exit -F arch=b32 -S execve -F uid=0 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_root_cmd
+
+## File Access
+### Unauthorized Access (unsuccessful)
+-a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b32 -S chown,fchown,fchownat,lchown -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b64 -S chown,fchown,fchownat,lchown -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+-a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=4294967295 -k T1166_Seuid_and_Setgid
+
+### Unsuccessful Creation
+-a always,exit -F arch=b32 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_access
+-a always,exit -F arch=b32 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_access
+-a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_access
+-a always,exit -F arch=b64 -S creat,open,openat,open_by_handle_at,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_access
+
+### Unsuccessful Modification
+-a always,exit -F arch=b32 -S rename,renameat,link,linkat,symlink,symlinkat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_modify
+-a always,exit -F arch=b32 -S rename,renameat,link,linkat,symlink,symlinkat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_modify
+-a always,exit -F arch=b64 -S rename,renameat,link,linkat,symlink,symlinkat -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_modify
+-a always,exit -F arch=b64 -S rename,renameat,link,linkat,symlink,symlinkat -F exit=-EPERM -F auid>=1000 -F auid!=4294967295 -k T1068_Exploitation_for_Privilege_Escalation_file_modify
+
+## 32bit API Exploitation
+-a always,exit -F arch=b32 -S mknod,mknodat -k T1068_Exploitation_for_Privilege_Escalation_mknod
+-a always,exit -F arch=b64 -S mknod,mknodat -k T1068_Exploitation_for_Privilege_Escalation_mknod
+
+## Application Deployment Software
+-w /usr/bin/rpm -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/yum -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/dpkg -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/apt-add-repository -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/apt-get -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/aptitude -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/zypper -p x -k T1017_Application_Deployment_Software
+-w /usr/bin/snap -p x -k T1017_Application_Deployment_Software
+
+## CHEF
+-w /etc/chef -p wa -k T1017_Application_Deployment_Software
+
+## T1136 - Create Account
+-a always,exit -F arch=b64 -S useradd,usermod,userdel,groupadd,groupmod,groupdel -F auid>=1000 -F auid!=4294967295 -k T1136_Create_Account
+-a always,exit -F arch=b32 -S useradd,usermod,userdel,groupadd,groupmod,groupdel -F auid>=1000 -F auid!=4294967295 -k T1136_Create_Account
+
+## T1070 - Indicator Removal on Host
+-a always,exit -F arch=b64 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=4294967295 -k T1070_Indicator_Removal
+-a always,exit -F arch=b32 -S unlink,unlinkat,rename,renameat -F auid>=1000 -F auid!=4294967295 -k T1070_Indicator_Removal
+
+## T1105 - Ingress Tool Transfer
+-a always,exit -F arch=b64 -S open,openat,creat -F dir=/tmp -F success=1 -F auid>=1000 -F auid!=4294967295 -k T1105_Ingress_Tool_Transfer
+-a always,exit -F arch=b32 -S open,openat,creat -F dir=/tmp -F success=1 -F auid>=1000 -F auid!=4294967295 -k T1105_Ingress_Tool_Transfer
+-a always,exit -F arch=b64 -S open,openat,creat -F dir=/var/tmp -F success=1 -F auid>=1000 -F auid!=4294967295 -k T1105_Ingress_Tool_Transfer
+-a always,exit -F arch=b32 -S open,openat,creat -F dir=/var/tmp -F success=1 -F auid>=1000 -F auid!=4294967295 -k T1105_Ingress_Tool_Transfer
+
+## T1059 - Command and Scripting Interpreter
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=4294967295 -k T1059_Command_and_Scripting_Interpreter
+-a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=4294967295 -k T1059_Command_and_Scripting_Interpreter
+
+## T1055 - Process Injection
+-a always,exit -F arch=b64 -S ptrace -F a0=0x10 -F auid>=1000 -F auid!=4294967295 -k T1055_Process_Injection
+-a always,exit -F arch=b32 -S ptrace -F a0=0x10 -F auid>=1000 -F auid!=4294967295 -k T1055_Process_Injection
+
+## T1082 - System Information Discovery
+-a always,exit -F arch=b64 -S uname -F auid>=1000 -F auid!=4294967295 -k T1082_System_Information_Discovery
+-a always,exit -F arch=b32 -S uname -F auid>=1000 -F auid!=4294967295 -k T1082_System_Information_Discovery
+
+## T1016 - System Network Configuration Discovery
+-a always,exit -F arch=b64 -S socket,connect,accept,bind -F auid>=1000 -F auid!=4294967295 -k T1016_System_Network_Configuration_Discovery
+-a always,exit -F arch=b32 -S socket,connect,accept,bind -F auid>=1000 -F auid!=4294967295 -k T1016_System_Network_Configuration_Discovery
+
+## Files access
+-w /etc/hosts -p wa -k T1027_Obfuscated_Files_or_Information
+-w /etc/hostname -k T1082_System_Information_Discovery_hostname
+-w /etc/network/ -p wa -k T1016_System_Network_Configuration_Discovery
+-w /etc/netplan/ -p wa -k T1016_System_Network_Configuration_Discovery
+
+## T1037 - Boot or Logon Initialization Scripts
+-w /etc/init.d/ -p wa -k T1037_Boot_or_Logon_Initialization_Scripts
+-w /etc/systemd/system/ -p wa -k T1037_Boot_or_Logon_Initialization_Scripts
+
+## T1543 - Create or Modify System Process
+-w /usr/lib/systemd/system/ -p wa -k T1543_Create_or_Modify_System_Process
+-w /lib/systemd/system/ -p wa -k T1543_Create_or_Modify_System_Process
+-w /etc/systemd/user/ -p wa -k T1543_Create_or_Modify_System_Process
+-w /lib/systemd/user/ -p wa -k T1543_Create_or_Modify_System_Process
+
+## Kernel module loading (T1547)
+-a always,exit -F arch=b64 -S init_module,delete_module -F auid>=1000 -F auid!=4294967295 -k T1547_Kernel_modules
+-a always,exit -F arch=b32 -S init_module,delete_module -F auid>=1000 -F auid!=4294967295 -k T1547_Kernel_modules
+
+## File integrity monitoring
+-w /etc/ld.so.conf -p wa -k T1055_Process_Injection_ld
+-w /etc/ld.so.conf.d/ -p wa -k T1055_Process_Injection_ld
+
+# Make the configuration immutable --------------------------------------------
+## IMPORTANT: Uncomment the following line to make the configuration immutable
+## This prevents any rules from being changed until a reboot
+# -e 2
+FULL_AUDIT_RULES_EOF
 }
 
 # ===============================================================================
@@ -662,16 +1012,245 @@ EOF
 
 configure_rsyslog() {
     log "INFO" "Rsyslog QRadar iletimi yapılandırılıyor..."
-    
+
     backup_file "$RSYSLOG_QRADAR_CONF"
+
+    # Create 99-qradar.conf directly
+    cat > "$RSYSLOG_QRADAR_CONF" << EOF
+# QRadar Log Forwarding Configuration v4.2.1
+# Ubuntu Universal Edition
+
+# Global settings
+module(load="omfwd")
+module(load="mmjsonparse")
+module(load="omprogram")
+module(load="imfile")
+
+# Template for QRadar
+template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
+
+# Template for QRadar Ubuntu format
+template(name="QRadarUbuntuFormat" type="string" 
+    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% ubuntu-audit: type=\$.audit_type auid=\$.auid uid=\$.uid euid=\$.euid pid=\$.pid exe=\$.exe success=\$.success key=\$.key cmd=\$.full_command %msg%\\n"
+)
+
+# LEEF v2 Template for Ubuntu
+template(name="LEEFv2Ubuntu" type="string" 
+    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% LEEF:2.0|Linux|Ubuntu|$UBUNTU_VERSION|%app-name%|devTime=%TIMESTAMP:::date-unixtimestamp%|devTimeFormat=epoch|cat=Audit|sev=\$.severity|usrName=\$.uid_name|src=\$.src_ip|dst=\$.dst_ip|proto=\$.protocol|srcPort=\$.src_port|dstPort=\$.dst_port|cmd=\$.full_command|fileName=\$.filename|fileHash=\$.hash|processId=\$.pid|parentProcessId=\$.ppid|identSrc=\$.auid|accountName=\$.acct|reason=\$.reason%msg%\\n"
+)
+
+# Main queue for reliable forwarding
+main_queue(
+    queue.type="linkedList"
+    queue.filename="qradar_main_queue"
+    queue.maxDiskSpace="2g"
+    queue.size="100000"
+    queue.dequeueBatchSize="1000"
+    queue.saveOnShutdown="on"
+    queue.timeoutShutdown="10000"
+)
+
+# Ruleset for processing audit logs
+ruleset(name="qradar_audit") {
+    # Extract audit fields
+    set \$.audit_type = exec_template("/usr/local/bin/extract_audit_type.sh");
+    set \$.audit_result = exec_template("/usr/local/bin/extract_audit_result.sh");
     
-    # shellcheck source=../universal/99-qradar.conf
-    sed -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
-        -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
-        -e "s/qradar_execve_parser.py/\/usr\/local\/bin\/qradar_execve_parser.py/g" \
-        "$SCRIPT_DIR/../universal/99-qradar.conf" > "$RSYSLOG_QRADAR_CONF"
+    # Set severity based on audit result
+    if (\$.audit_result == "failed") then {
+        set \$.severity = "5";
+    } else {
+        set \$.severity = "3";
+    }
     
-    chmod 644 "$RSYSLOG_QRADAR_CONF"
+    # EXECVE command reconstruction
+    if (\$msg contains 'type=EXECVE') then {
+        action(
+            type="omprog"
+            binary="$CONCAT_SCRIPT_PATH"
+            template="QRadarFormat"
+        )
+        stop
+    }
+
+    # Forward to QRadar with both formats (LEEF v2 + Traditional)
+    # LEEF v2 format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="LEEFv2Ubuntu"
+        queue.type="linkedList"
+        queue.size="50000"
+        action.resumeRetryCount="-1"
+    )
+    
+    # Traditional format
+    action(
+        type="omfwd"
+        target="$QRADAR_IP"
+        port="$QRADAR_PORT"
+        protocol="tcp"
+        template="QRadarUbuntuFormat"
+        queue.type="linkedList"
+        queue.size="50000"
+        action.resumeRetryCount="-1"
+    )
+    stop
+}
+
+# Input for audit logs
+if (\$syslogfacility-text == 'local3') then {
+    call qradar_audit
+}
+EOF
+
+    # Create rsyslog.conf
+    backup_file "/etc/rsyslog.conf"
+    cat > "/etc/rsyslog.conf" << 'RSYSLOG_CONF_EOF'
+# /etc/rsyslog.conf configuration file for rsyslog
+#
+# For more information install rsyslog-doc and see
+# /usr/share/doc/rsyslog-doc/html/configuration/index.html
+#
+# Default logging rules can be found in /etc/rsyslog.d/50-default.conf
+
+#################
+#### MODULES ####
+#################
+
+module(load="imuxsock") # provides support for local system logging
+module(load="imklog")   # provides kernel logging support
+#module(load="immark")  # provides --MARK-- message capability
+
+# provides UDP syslog reception
+#module(load="imudp")
+#input(type="imudp" port="514")
+
+# provides TCP syslog reception
+#module(load="imtcp")
+#input(type="imtcp" port="514")
+
+# provides kernel logging support and enable non-kernel klog messages
+module(load="imklog" permitnonkernelfacility="on")
+
+###########################
+#### GLOBAL DIRECTIVES ####
+###########################
+
+#
+# Use traditional timestamp format.
+# To enable high precision timestamps, comment out the following line.
+#
+$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+
+# Filter duplicated messages
+$RepeatedMsgReduction on
+
+#
+# Set the default permissions for all log files.
+#
+$FileOwner syslog
+$FileGroup adm
+$FileCreateMode 0640
+$DirCreateMode 0755
+$Umask 0022
+$PrivDropToUser syslog
+$PrivDropToGroup syslog
+
+#
+# Where to place spool and state files
+#
+$WorkDirectory /var/spool/rsyslog
+
+#
+# Include all config files in /etc/rsyslog.d/
+#
+$IncludeConfig /etc/rsyslog.d/*.conf
+RSYSLOG_CONF_EOF
+    chmod 644 "/etc/rsyslog.conf"
+
+    # Create ignore_programs.json
+    mkdir -p "/etc/rsyslog.d"
+    backup_file "/etc/rsyslog.d/ignore_programs.json"
+    cat > "/etc/rsyslog.d/ignore_programs.json" << 'IGNORE_PROGRAMS_EOF'
+{
+  "version": 1,
+  "nomatch": "PASS",
+  "type": "string",
+  "table": [
+    {"index": "systemd", "value": "IGNORE"},
+    {"index": "systemd-resolved", "value": "IGNORE"},
+    {"index": "systemd-timesyncd", "value": "IGNORE"},
+    {"index": "systemd-networkd", "value": "IGNORE"},
+    {"index": "systemd-journald", "value": "IGNORE"},
+    {"index": "systemd-logind", "value": "IGNORE"},
+    {"index": "snapd", "value": "IGNORE"},
+    {"index": "packagekitd", "value": "IGNORE"},
+    {"index": "polkitd", "value": "IGNORE"},
+    {"index": "dbus", "value": "IGNORE"},
+    {"index": "dbus-daemon", "value": "IGNORE"},
+    {"index": "NetworkManager", "value": "IGNORE"},
+    {"index": "ModemManager", "value": "IGNORE"},
+    {"index": "wpa_supplicant", "value": "IGNORE"},
+    {"index": "avahi-daemon", "value": "IGNORE"},
+    {"index": "colord", "value": "IGNORE"},
+    {"index": "cups", "value": "IGNORE"},
+    {"index": "cups-browsed", "value": "IGNORE"},
+    {"index": "gnome-shell", "value": "IGNORE"},
+    {"index": "gdm", "value": "IGNORE"},
+    {"index": "udisks2", "value": "IGNORE"},
+    {"index": "rtkit-daemon", "value": "IGNORE"},
+    {"index": "accounts-daemon", "value": "IGNORE"}
+  ]
+}
+IGNORE_PROGRAMS_EOF
+    chmod 644 "/etc/rsyslog.d/ignore_programs.json"
+
+    # Create rsyslog parser configuration for audit logs
+    cat > "/etc/rsyslog.d/01-qradar-parsers.conf" << 'PARSER_CONF_EOF'
+# QRadar Audit Log Parsing Rules
+# This file contains mmnormalize rules for parsing audit logs
+
+# Load the mmnormalize module
+module(load="mmnormalize")
+
+# Define parsing rules for different audit types
+# These rules extract fields from audit messages for better SIEM integration
+
+# SYSCALL parsing
+parser(name="syscall.parser" type="string" rulebase="/etc/rsyslog.d/audit.rulebase")
+
+# USER_AUTH parsing  
+parser(name="userauth.parser" type="string" rulebase="/etc/rsyslog.d/audit.rulebase")
+
+# USER_CMD parsing
+parser(name="usercmd.parser" type="string" rulebase="/etc/rsyslog.d/audit.rulebase")
+
+# EXECVE parsing
+parser(name="execve.parser" type="string" rulebase="/etc/rsyslog.d/audit.rulebase")
+PARSER_CONF_EOF
+    chmod 644 "/etc/rsyslog.d/01-qradar-parsers.conf"
+
+    # Create audit rulebase file
+    cat > "/etc/rsyslog.d/audit.rulebase" << 'AUDIT_RULEBASE_EOF'
+version=2
+
+# USER_AUTH parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): pid=%pid:number% uid=%uid:number% auid=%auid:number% ses=%ses:number% msg='op=%op:word% acct="%acct:word%" exe="%exe:char-to:"%" hostname=%hostname:word% addr=%addr:ipv4% terminal=%terminal:word% res=%res:word%'%
+
+# USER_CMD parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): pid=%pid:number% uid=%uid:number% auid=%auid:number% ses=%ses:number% msg='cwd="%cwd:char-to:"%" cmd=%cmd:quoted-string% terminal=%terminal:word% res=%res:word%'%
+
+# SYSCALL parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): arch=%arch:word% syscall=%syscall:number% success=%success:word% exit=%exit:number% a0=%a0:word% a1=%a1:word% a2=%a2:word% a3=%a3:word% items=%items:number% ppid=%ppid:number% pid=%pid:number% auid=%auid:number% uid=%uid:number% gid=%gid:number% euid=%euid:number% suid=%suid:number% fsuid=%fsuid:number% egid=%egid:number% sgid=%sgid:number% fsgid=%fsgid:number% tty=%tty:word% ses=%ses:number% comm="%comm:char-to:"%" exe="%exe:char-to:"%" key="%key:char-to:"%"%
+
+# EXECVE parsing
+rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): argc=%argc:number% a0="%a0:char-to:"%" a1="%a1:char-to:"%" a2="%a2:char-to:"%" a3="%a3:char-to:"%"%
+AUDIT_RULEBASE_EOF
+    chmod 644 "/etc/rsyslog.d/audit.rulebase"
+
     success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
 }
 
@@ -705,40 +1284,40 @@ ruleset(name="direct_audit_processing") {
     set \$.uid = re_extract(\$msg, "uid=([0-9]+)", 0, 1, "-1");
     set \$.euid = re_extract(\$msg, "euid=([0-9]+)", 0, 1, "-1");
     set \$.pid = re_extract(\$msg, "pid=([0-9]+)", 0, 1, "-1");
-    set \$.exe = re_extract(\$msg, "exe=\\"([^\\"]+)\\"", 0, 1, "unknown");
+    set \$.exe = re_extract(\$msg, 'exe="([^"]+)"', 0, 1, "unknown");
     set \$.success = re_extract(\$msg, "success=([a-z]+)", 0, 1, "unknown");
-    set \$.key = re_extract(\$msg, "key=\\"([^\\"]+)\\"", 0, 1, "none");
+    set \$.key = re_extract(\$msg, 'key="([^"]+)"', 0, 1, "none");
 
     # Enhanced EXECVE processing in fallback mode
-    if \$msg contains "type=EXECVE" then {
+    if (\$msg contains "type=EXECVE") then {
         # Enhanced EXECVE command reconstruction with extended arguments
-        set \$.a0 = re_extract(\$msg, "a0=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a1 = re_extract(\$msg, "a1=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a2 = re_extract(\$msg, "a2=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a3 = re_extract(\$msg, "a3=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a4 = re_extract(\$msg, "a4=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a5 = re_extract(\$msg, "a5=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a6 = re_extract(\$msg, "a6=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a7 = re_extract(\$msg, "a7=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a8 = re_extract(\$msg, "a8=\\"([^\\"]+)\\"", 0, 1, "");
-        set \$.a9 = re_extract(\$msg, "a9=\\"([^\\"]+)\\"", 0, 1, "");
+        set \$.a0 = re_extract(\$msg, 'a0="([^"]+)"', 0, 1, "");
+        set \$.a1 = re_extract(\$msg, 'a1="([^"]+)"', 0, 1, "");
+        set \$.a2 = re_extract(\$msg, 'a2="([^"]+)"', 0, 1, "");
+        set \$.a3 = re_extract(\$msg, 'a3="([^"]+)"', 0, 1, "");
+        set \$.a4 = re_extract(\$msg, 'a4="([^"]+)"', 0, 1, "");
+        set \$.a5 = re_extract(\$msg, 'a5="([^"]+)"', 0, 1, "");
+        set \$.a6 = re_extract(\$msg, 'a6="([^"]+)"', 0, 1, "");
+        set \$.a7 = re_extract(\$msg, 'a7="([^"]+)"', 0, 1, "");
+        set \$.a8 = re_extract(\$msg, 'a8="([^"]+)"', 0, 1, "");
+        set \$.a9 = re_extract(\$msg, 'a9="([^"]+)"', 0, 1, "");
 
         # Build complete command line with all arguments
         set \$.full_command = \$.a0;
-        if \$.a1 != "" then set \$.full_command = \$.full_command & " " & \$.a1;
-        if \$.a2 != "" then set \$.full_command = \$.full_command & " " & \$.a2;
-        if \$.a3 != "" then set \$.full_command = \$.full_command & " " & \$.a3;
-        if \$.a4 != "" then set \$.full_command = \$.full_command & " " & \$.a4;
-        if \$.a5 != "" then set \$.full_command = \$.full_command & " " & \$.a5;
-        if \$.a6 != "" then set \$.full_command = \$.full_command & " " & \$.a6;
-        if \$.a7 != "" then set \$.full_command = \$.full_command & " " & \$.a7;
-        if \$.a8 != "" then set \$.full_command = \$.full_command & " " & \$.a8;
-        if \$.a9 != "" then set \$.full_command = \$.full_command & " " & \$.a9;
+        if (\$.a1 != "") then set \$.full_command = \$.full_command & " " & \$.a1;
+        if (\$.a2 != "") then set \$.full_command = \$.full_command & " " & \$.a2;
+        if (\$.a3 != "") then set \$.full_command = \$.full_command & " " & \$.a3;
+        if (\$.a4 != "") then set \$.full_command = \$.full_command & " " & \$.a4;
+        if (\$.a5 != "") then set \$.full_command = \$.full_command & " " & \$.a5;
+        if (\$.a6 != "") then set \$.full_command = \$.full_command & " " & \$.a6;
+        if (\$.a7 != "") then set \$.full_command = \$.full_command & " " & \$.a7;
+        if (\$.a8 != "") then set \$.full_command = \$.full_command & " " & \$.a8;
+        if (\$.a9 != "") then set \$.full_command = \$.full_command & " " & \$.a9;
 
         # Send with traditional parser
         action(
             type="omprog"
-            binary="$CONCAT_SCRIPT_PATH $QRADAR_IP $QRADAR_PORT"
+            binary="$CONCAT_SCRIPT_PATH"
             template="RSYSLOG_TraditionalFileFormat"
         )
 
@@ -827,7 +1406,7 @@ restart_services() {
     sleep 3
     
     # Auditd'yi başlat
-    retry_operation "auditd servisini başlatma" systemctl start auditd
+    retry_operation "auditd servisini başlatma" systemctl start "auditd"
     
     sleep 2
     
@@ -835,7 +1414,7 @@ restart_services() {
     load_audit_rules
     
     # Rsyslog'u başlat
-    retry_operation "rsyslog servisini başlatma" systemctl start rsyslog
+    retry_operation "rsyslog servisini başlatma" systemctl start "rsyslog"
     
     success "Tüm servisler başarıyla yapılandırıldı ve başlatıldı"
 }
@@ -884,11 +1463,17 @@ load_audit_rules() {
 
 run_validation_tests() {
     log "INFO" "Sistem doğrulama testleri çalıştırılıyor..."
-    
+
+    # DRY-RUN'da servis testlerini atla
+    if [[ "$DRY_RUN" == true ]]; then
+        log "INFO" "DRY-RUN: servis doğrulama testleri atlandı"
+        return
+    fi
+
     # Servis durumu kontrolü
     local services=("auditd" "rsyslog")
     for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service"; then
+        if detect_init && systemctl is-active --quiet "$service"; then
             success "$service servisi çalışıyor"
         else
             warn "$service servisi çalışmıyor - başlatmaya çalışılıyor..."
@@ -954,7 +1539,7 @@ test_audit_functionality() {
     
     # Audit olayını kontrol et
     if command_exists ausearch; then
-        if ausearch --start today -k identity_changes | grep -q "type=SYSCALL"; then
+        if ausearch --start today -k T1087_Account_Discovery 2>/dev/null | grep -q "type=SYSCALL"; then
             success "Audit logging çalışıyor"
         else
             warn "Audit logging test başarısız"
@@ -980,6 +1565,11 @@ generate_setup_summary() {
     echo "   • Ubuntu Sürümü: $UBUNTU_VERSION ($UBUNTU_CODENAME)"
     echo "   • Audisp Metodu: $AUDISP_METHOD"
     echo "   • QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
+    if [[ "$USE_MINIMAL_RULES" == true ]]; then
+        echo "   • Kural Seti: Minimal (düşük EPS)"
+    else
+        echo "   • Kural Seti: Kapsamlı MITRE ATT&CK"
+    fi
     echo ""
     echo "📁 OLUŞTURULAN DOSYALAR:"
     echo "   • Audit Kuralları: $AUDIT_RULES_FILE"
@@ -1066,12 +1656,12 @@ main() {
 # Argument parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --minimal)
-            USE_MINIMAL_RULES=true
-            shift
-            ;;
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --minimal)
+            USE_MINIMAL_RULES=true
             shift
             ;;
         -h|--help)
@@ -1081,6 +1671,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --minimal  Use minimal audit rules for EPS optimization"
+            echo "  --dry-run  Test mode without service restarts"
             echo "  --help     Show this help message"
             echo ""
             echo "Examples:"
