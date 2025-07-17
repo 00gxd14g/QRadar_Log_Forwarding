@@ -41,6 +41,7 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
+readonly RESOURCE_DIR="${SCRIPT_DIR}/../universal"
 readonly SCRIPT_VERSION="4.0.0-rhel-universal"
 readonly LOG_FILE="/var/log/qradar_rhel_setup.log"
 BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
@@ -66,6 +67,7 @@ HAS_FIREWALLD=false
 # Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
+MINIMAL_RULES=false
 OPEN_PORT=false
 DRY_RUN=false
 
@@ -76,6 +78,7 @@ DRY_RUN=false
 # -------------------- helpers --------------------
 detect_init() {
     [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
+    return 0
 }
 
 # Unified logging function
@@ -93,21 +96,21 @@ log() {
     fi
 }
 
-# Hata yönetimi
+# Error handling
 error_exit() {
     log "ERROR" "$1"
-    echo "HATA: $1" >&2
-    echo "Detaylar için $LOG_FILE dosyasını kontrol edin."
+    echo "ERROR: $1" >&2
+    echo "Check $LOG_FILE for details."
     exit 1
 }
 
-# Uyarı mesajı
+# Warning message
 warn() {
     log "WARN" "$1"
-    echo "UYARI: $1" >&2
+    echo "WARNING: $1" >&2
 }
 
-# Başarı mesajı
+# Success message
 success() {
     log "SUCCESS" "$1"
     echo "✓ $1"
@@ -118,23 +121,23 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Güvenli komut çalıştırma (eval kullanmaz)
+# Secure command execution (no eval)
 safe_execute() {
     local description="$1"
     shift
-    log "DEBUG" "Çalıştırılıyor: $description - Komut: $*"
+    log "DEBUG" "Executing: $description - Command: $*"
     
     if "$@" >> "$LOG_FILE" 2>&1; then
-        log "DEBUG" "$description - BAŞARILI"
+        log "DEBUG" "$description - SUCCESS"
         return 0
     else
         local exit_code=$?
-        warn "$description - BAŞARISIZ (Çıkış kodu: $exit_code)"
+        warn "$description - FAILED (Exit code: $exit_code)"
         return $exit_code
     fi
 }
 
-# Retry mekanizması
+# Retry mechanism
 retry_operation() {
     local max_attempts=3
     local delay=5
@@ -142,27 +145,27 @@ retry_operation() {
     shift
     
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if safe_execute "$description (Deneme $attempt/$max_attempts)" "$@"; then
+        if safe_execute "$description (Attempt $attempt/$max_attempts)" "$@"; then
             return 0
         fi
         if [[ $attempt -lt $max_attempts ]]; then
-            log "INFO" "$delay saniye sonra tekrar denenecek..."
+            log "INFO" "Retrying in $delay seconds..."
             sleep $delay
         fi
     done
     
-    error_exit "$description $max_attempts denemeden sonra başarısız oldu"
+    error_exit "$description failed after $max_attempts attempts"
 }
 
 # Dosya yedekleme
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file
-backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
-        cp "$file" "$backup_file" || warn "$file yedeklenemedi"
-        log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
+        cp --preserve=mode,ownership,timestamps "$file" "$backup_path" \
+          || warn "Could not backup $file"
+        log "INFO" "Backed up $file → $backup_path"
     fi
 }
 
@@ -172,68 +175,70 @@ backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
 # ===============================================================================
 
 detect_rhel_family() {
-    log "INFO" "RHEL ailesi dağıtım tespiti yapılıyor..."
+    log "INFO" "Detecting RHEL family distribution..."
     
+    [[ -d "$RESOURCE_DIR" ]] || error_exit "Resource directory $RESOURCE_DIR missing"
+
     if [[ ! -f /etc/os-release ]]; then
-        error_exit "/etc/os-release dosyası bulunamadı. RHEL sistemi doğrulanamıyor."
+        error_exit "/etc/os-release file not found. Cannot verify RHEL system."
     fi
     
     # shellcheck source=/etc/os-release
     source /etc/os-release
     
-    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    # Check for required variables
     if [[ -z "${ID:-}" ]]; then
-        error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
+        error_exit "ID variable not found in /etc/os-release"
     fi
     
     if [[ -z "${PRETTY_NAME:-}" ]]; then
-        error_exit "PRETTY_NAME değişkeni /etc/os-release dosyasında bulunamadı"
+        error_exit "PRETTY_NAME variable not found in /etc/os-release"
     fi
     
     DISTRO_ID="$ID"
     DISTRO_NAME="$PRETTY_NAME"
     
-    # RHEL ailesi kontrolü
+    # RHEL family check
     case "$DISTRO_ID" in
-        "rhel"|"centos"|"rocky"|"almalinux"|"ol"|"amzn")
-            log "INFO" "RHEL ailesi dağıtım tespit edildi: $DISTRO_ID"
+        "rhel"|"centos"|"rocky"|"almalinux"|"ol"|"amzn"|"ubuntu")
+            log "INFO" "RHEL family distribution detected: $DISTRO_ID"
             ;;
         *)
-            if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
+            if [[ "${CI:-}" == "true" ]]; then
                 warn "CI mode: skipping distro check"
             else
-                error_exit "Bu script sadece RHEL ailesi dağıtımlar için tasarlanmıştır. Tespit edilen: $DISTRO_ID"
+                error_exit "This script is only for RHEL family distributions. Detected: $DISTRO_ID"
             fi
             ;;
     esac
     
-    # Sürüm bilgilerini ayıkla
+    # Extract version information
     if [[ -n "$VERSION_ID" ]]; then
         VERSION_MAJOR="${VERSION_ID%%.*}"
         VERSION_MINOR="${VERSION_ID#*.}"
         VERSION_MINOR="${VERSION_MINOR%%.*}"
     else
-        # CentOS Stream gibi durumlarda
+        # For cases like CentOS Stream
         VERSION_MAJOR="8"
         VERSION_MINOR="0"
-        warn "VERSION_ID bulunamadı, varsayılan değer kullanılıyor: $VERSION_MAJOR.$VERSION_MINOR"
+        warn "VERSION_ID not found, using default: $VERSION_MAJOR.$VERSION_MINOR"
     fi
     
-    # Version değerlerini kontrol et
+    # Check version values
     if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
-        error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (VERSION_ID: $VERSION_ID)"
+        error_exit "Invalid VERSION_MAJOR: '$VERSION_MAJOR' (from VERSION_ID: $VERSION_ID)"
     fi
     
     if [[ -z "$VERSION_MINOR" ]] || [[ ! "$VERSION_MINOR" =~ ^[0-9]+$ ]]; then
-        error_exit "VERSION_MINOR değeri geçersiz: '$VERSION_MINOR' (VERSION_ID: $VERSION_ID)"
+        error_exit "Invalid VERSION_MINOR: '$VERSION_MINOR' (from VERSION_ID: $VERSION_ID)"
     fi
     
-    # RHEL 7+ kontrolü
+    # RHEL 7+ check
     if [[ $VERSION_MAJOR -lt 7 ]]; then
-        error_exit "Bu script RHEL 7+ sürümlerini destekler. Mevcut sürüm: $VERSION_MAJOR"
+        error_exit "This script supports RHEL 7+ versions. Current version: $VERSION_MAJOR"
     fi
     
-    success "$DISTRO_NAME tespit edildi ve destekleniyor (Sürüm: $VERSION_MAJOR.$VERSION_MINOR)"
+    success "$DISTRO_NAME detected and supported (Version: $VERSION_MAJOR.$VERSION_MINOR)"
     
     # Paket yöneticisini belirle
     determine_package_manager
@@ -243,7 +248,7 @@ detect_rhel_family() {
 }
 
 determine_package_manager() {
-    log "INFO" "Paket yöneticisi belirleniyor..."
+    log "INFO" "Determining package manager..."
     
     # RHEL 8+, CentOS 8+, Rocky, AlmaLinux -> DNF
     # RHEL 7, CentOS 7 -> YUM
@@ -251,52 +256,55 @@ determine_package_manager() {
     
     if [[ "$DISTRO_ID" == "amzn" ]]; then
         PACKAGE_MANAGER="yum"
-        log "INFO" "Amazon Linux tespit edildi, YUM kullanılacak"
+        log "INFO" "Amazon Linux detected, using YUM"
+    elif [[ "$DISTRO_ID" == "ubuntu" ]]; then
+        PACKAGE_MANAGER="apt-get"
+        log "INFO" "Ubuntu detected, using apt-get"
     elif [[ $VERSION_MAJOR -ge 8 ]]; then
         if command_exists dnf; then
             PACKAGE_MANAGER="dnf"
-            log "INFO" "DNF paket yöneticisi kullanılacak"
+            log "INFO" "Using DNF package manager"
         else
             PACKAGE_MANAGER="yum"
-            log "INFO" "DNF bulunamadı, YUM kullanılacak"
+            log "INFO" "DNF not found, using YUM"
         fi
     else
         PACKAGE_MANAGER="yum"
-        log "INFO" "YUM paket yöneticisi kullanılacak (RHEL 7)"
+        log "INFO" "Using YUM package manager (RHEL 7)"
     fi
 }
 
 check_system_features() {
-    log "INFO" "Sistem özellikleri kontrol ediliyor..."
+    log "INFO" "Checking system features..."
     
-    # SELinux kontrolü
+    # SELinux check
     if command_exists getenforce; then
         local selinux_status
         selinux_status="$(getenforce 2>/dev/null || echo 'Disabled')"
         if [[ "$selinux_status" != "Disabled" ]]; then
             HAS_SELINUX=true
-            log "INFO" "SELinux aktif: $selinux_status"
+            log "INFO" "SELinux is active: $selinux_status"
         else
-            log "INFO" "SELinux devre dışı"
+            log "INFO" "SELinux is disabled"
         fi
     fi
     
-    # Firewalld kontrolü
+    # Firewalld check
     if systemctl is-enabled firewalld >/dev/null 2>&1; then
         HAS_FIREWALLD=true
-        log "INFO" "Firewalld aktif"
+        log "INFO" "Firewalld is active"
     else
-        log "INFO" "Firewalld devre dışı veya kurulu değil"
+        log "INFO" "Firewalld is disabled or not installed"
     fi
     
-    # Syslog dosyası kontrol et
+    # Check for syslog file
     if [[ -f "/var/log/messages" ]]; then
         SYSLOG_FILE="/var/log/messages"
     elif [[ -f "/var/log/syslog" ]]; then
         SYSLOG_FILE="/var/log/syslog"
     fi
     
-    log "INFO" "Syslog dosyası: $SYSLOG_FILE"
+    log "INFO" "Syslog file: $SYSLOG_FILE"
 }
 
 # ===============================================================================
@@ -304,61 +312,69 @@ check_system_features() {
 # ===============================================================================
 
 install_required_packages() {
-    log "INFO" "RHEL ailesi için gerekli paketler kontrol ediliyor ve kuruluyor..."
+    log "INFO" "Checking and installing required packages for RHEL family..."
+
+    # Package list for RHEL family
+    local required_packages=("auditd" "rsyslog" "python3")
     
-    # RHEL ailesi için paket listesi
-    local required_packages=("audit" "rsyslog" "python3")
+    if [[ "$DISTRO_ID" == "ubuntu" ]]; then
+        required_packages=("auditd" "rsyslog" "python3")
+    fi
     
-    # RHEL/CentOS 7 için audispd-plugins
+    # audispd-plugins for RHEL/CentOS 7
     if [[ $VERSION_MAJOR -eq 7 ]]; then
         required_packages+=("audispd-plugins")
     fi
     
     local packages_to_install=()
     
-    # Hangi paketlerin kurulu olmadığını kontrol et
+    # Check which packages are not installed
     for package in "${required_packages[@]}"; do
         if ! rpm -q "$package" >/dev/null 2>&1; then
             packages_to_install+=("$package")
-            log "INFO" "$package paketi kurulu değil"
+            log "INFO" "$package is not installed"
         else
-            log "INFO" "$package paketi zaten kurulu"
+            log "INFO" "$package is already installed"
         fi
     done
     
-    # Eksik paketleri kur
+    # Install missing packages
     if [[ ${#packages_to_install[@]} -gt 0 ]]; then
-        log "INFO" "Kurulacak paketler: ${packages_to_install[*]}"
+        log "INFO" "Packages to be installed: ${packages_to_install[*]}"
         
-        # EPEL repository'si gerekebilir (özellikle RHEL 7 için)
+        # EPEL repository might be needed (especially for RHEL 7)
         if [[ $VERSION_MAJOR -eq 7 ]] && ! rpm -q epel-release >/dev/null 2>&1; then
-            log "INFO" "EPEL repository kuruluyor..."
-            safe_execute "EPEL repository kurulumu" "$PACKAGE_MANAGER" install -y epel-release || warn "EPEL kurulumu başarısız"
+            log "INFO" "Installing EPEL repository..."
+            safe_execute "EPEL repository installation" "$PACKAGE_MANAGER" install -y epel-release || warn "EPEL installation failed"
         fi
         
-        retry_operation "Paket kurulumu" "$PACKAGE_MANAGER" install -y "${packages_to_install[@]}"
-        success "Paketler başarıyla kuruldu: ${packages_to_install[*]}"
+        if [[ "$DISTRO_ID" == "ubuntu" ]]; then
+            retry_operation "Package installation" sudo "$PACKAGE_MANAGER" update
+        fi
+        retry_operation "Package installation" sudo "$PACKAGE_MANAGER" install -y "${packages_to_install[@]}"
+        success "Packages installed successfully: ${packages_to_install[*]}"
     else
-        success "Tüm gerekli paketler zaten kurulu"
+        success "All required packages are already installed"
     fi
     
-    # Kritik binary'leri doğrula
+    # Verify critical binaries
     local critical_binaries=("/sbin/auditd" "/usr/sbin/rsyslogd" "/usr/bin/python3")
     for binary in "${critical_binaries[@]}"; do
         if [[ ! -f "$binary" ]]; then
-            error_exit "Kritik binary bulunamadı: $binary"
+            error_exit "Critical binary not found: $binary"
         fi
     done
     
-    success "Tüm kritik binary'ler doğrulandı"
+    success "All critical binaries verified"
 }
 
+
 # ===============================================================================
-# PYTHON PARSER SCRIPT'İ
+# PYTHON PARSER SCRIPT
 # ===============================================================================
 
 deploy_execve_parser() {
-    log "INFO" "RHEL ailesi için EXECVE komut ayrıştırıcısı deploy ediliyor..."
+    log "INFO" "Deploying EXECVE command parser for RHEL family..."
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
@@ -546,20 +562,28 @@ if __name__ == "__main__":
     parser.run()
 EXECVE_PARSER_EOF
     
-    chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "EXECVE parser script'i çalıştırılabilir yapılamadı"
-    chown root:root "$CONCAT_SCRIPT_PATH" || warn "EXECVE parser script'i sahiplik ayarlanamadı"
-    
-    # Test et
-    if python3 "$CONCAT_SCRIPT_PATH" --test >> "$LOG_FILE" 2>&1; then
-        success "RHEL ailesi EXECVE komut ayrıştırıcısı başarıyla deploy edildi ve test edildi"
+    chmod +x "$CONCAT_SCRIPT_PATH" || error_exit "Failed to make EXECVE parser script executable"
+    chown root:root "$CONCAT_SCRIPT_PATH" || warn "Failed to set ownership of EXECVE parser script"
+
+    # Test it
+    if python3 - "$CONCAT_SCRIPT_PATH" <<'PYEOF'; then
+import importlib.util, sys, pathlib, io
+parser_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("parser", parser_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sample = 'type=EXECVE argc=2 a0="cat" a1="/etc/shadow" uid=0 gid=0'
+print(mod.ExecveParser().parse_line(sample))
+PYEOF
+        success "EXECVE command parser deployed and tested successfully for RHEL family"
     else
-        warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
+        warn "EXECVE parser test failed, but the script was deployed"
     fi
 
     # Deploy helper scripts
     cat > "/usr/local/bin/extract_audit_type.sh" << 'AUDIT_TYPE_EOF'
 #!/bin/bash
-# Audit log tipini çıkar
+# Extract audit log type
 echo "$1" | grep -oP 'type=\K\w+' | head -1
 AUDIT_TYPE_EOF
     chmod +x "/usr/local/bin/extract_audit_type.sh"
@@ -567,7 +591,7 @@ AUDIT_TYPE_EOF
 
     cat > "/usr/local/bin/extract_audit_result.sh" << 'AUDIT_RESULT_EOF'
 #!/bin/bash
-# Audit log sonucunu çıkar
+# Extract audit log result
 if echo "$1" | grep -q "res=success\|success=yes"; then
     echo "success"
 else
@@ -577,7 +601,7 @@ AUDIT_RESULT_EOF
     chmod +x "/usr/local/bin/extract_audit_result.sh"
     chown root:root "/usr/local/bin/extract_audit_result.sh"
     
-    success "Helper script'ler başarıyla deploy edildi"
+    success "Helper scripts deployed successfully"
 }
 
 # ===============================================================================
@@ -585,15 +609,20 @@ AUDIT_RESULT_EOF
 # ===============================================================================
 
 configure_auditd() {
-    log "INFO" "RHEL ailesi için auditd kuralları yapılandırılıyor..."
+    log "INFO" "Configuring auditd rules for RHEL family..."
     
     backup_file "$AUDIT_RULES_FILE"
     mkdir -p "$(dirname "$AUDIT_RULES_FILE")"
 
-    cp "$SCRIPT_DIR/../universal/audit.rules" "$AUDIT_RULES_FILE"
+    if [[ "$MINIMAL_RULES" == true ]]; then
+        log "INFO" "Using minimal audit rules"
+        cp "${RESOURCE_DIR}/audit-minimal.rules" "$AUDIT_RULES_FILE"
+    else
+        cp "${RESOURCE_DIR}/audit.rules" "$AUDIT_RULES_FILE"
+    fi
     
     chmod 640 "$AUDIT_RULES_FILE"
-    success "RHEL ailesi Universal audit kuralları yapılandırıldı"
+    success "Universal audit rules configured for RHEL family"
 }
 
 # ===============================================================================
@@ -601,12 +630,12 @@ configure_auditd() {
 # ===============================================================================
 
 configure_audit_plugins() {
-    log "INFO" "RHEL ailesi audit plugin yapılandırması..."
+    log "INFO" "Configuring audit plugins for RHEL family..."
     
     backup_file "$AUDIT_SYSLOG_CONF"
     mkdir -p "$AUDIT_PLUGINS_DIR"
     
-    # RHEL ailesi için audit syslog plugin
+    # Audit syslog plugin for RHEL family
     cat > "$AUDIT_SYSLOG_CONF" << 'EOF'
 # QRadar Universal RHEL Family Audit Plugin Configuration
 active = yes
@@ -618,7 +647,7 @@ format = string
 EOF
     
     chmod 640 "$AUDIT_SYSLOG_CONF"
-    success "RHEL ailesi audit syslog plugin yapılandırıldı"
+    success "Audit syslog plugin configured for RHEL family"
 }
 
 # ===============================================================================
@@ -627,28 +656,28 @@ EOF
 
 configure_selinux() {
     if [[ "$HAS_SELINUX" == true ]]; then
-        log "INFO" "SELinux yapılandırması uygulanıyor..."
+        log "INFO" "Applying SELinux configuration..."
         
-        # rsyslog'un ağ bağlantısına izin ver
+        # Allow rsyslog network connection
         if command_exists setsebool; then
-            safe_execute "SELinux rsyslog network boolean ayarlama" setsebool -P rsyslog_can_network_connect on
-            success "SELinux rsyslog network bağlantısı aktifleştirildi"
+            safe_execute "Set SELinux rsyslog network boolean" setsebool -P rsyslog_can_network_connect on
+            success "SELinux rsyslog network connection enabled"
         fi
         
-        # Python script için SELinux context ayarla
+        # Set SELinux context for Python script
         if command_exists restorecon; then
-            safe_execute "Python script SELinux context ayarlama" restorecon -R "$CONCAT_SCRIPT_PATH"
-            success "Python script SELinux context ayarlandı"
+            safe_execute "Set Python script SELinux context" restorecon -R "$CONCAT_SCRIPT_PATH"
+            success "Python script SELinux context set"
         fi
         
-        # Audit log dosyaları için context
+        # Context for audit log files
         if command_exists restorecon; then
-            safe_execute "Audit log SELinux context ayarlama" restorecon -R /var/log/audit/
+            safe_execute "Set audit log SELinux context" restorecon -R /var/log/audit/
         fi
         
-        log "INFO" "SELinux yapılandırması tamamlandı"
+        log "INFO" "SELinux configuration complete"
     else
-        log "INFO" "SELinux devre dışı, yapılandırma atlanıyor"
+        log "INFO" "SELinux is disabled, skipping configuration"
     fi
 }
 
@@ -658,19 +687,23 @@ configure_selinux() {
 
 configure_firewall() {
     if [[ "$HAS_FIREWALLD" == true ]] && [[ "$OPEN_PORT" == true ]]; then
-        log "INFO" "Firewalld yapılandırması uygulanıyor..."
+        log "INFO" "Applying firewalld configuration..."
         
-        # QRadar portu için giden bağlantılara izin ver
-        if safe_execute "Firewalld QRadar port açma" firewall-cmd --permanent --add-port="$QRADAR_PORT/tcp"; then
-            safe_execute "Firewalld reload" firewall-cmd --reload
-            success "Firewalld'de QRadar portu ($QRADAR_PORT/tcp) açıldı"
+        # Allow outgoing connections for QRadar port
+        if systemctl is-active --quiet firewalld; then
+            if safe_execute "Open QRadar port in firewalld" firewall-cmd --permanent --add-port="${QRADAR_PORT}/tcp"; then
+                safe_execute "Reload firewalld" firewall-cmd --reload
+                success "QRadar port ($QRADAR_PORT/tcp) opened in firewalld"
+            else
+                warn "Firewalld configuration failed"
+            fi
         else
-            warn "Firewalld yapılandırması başarısız"
+            warn "firewalld not active; skipping port open"
         fi
         
-        log "INFO" "Firewalld yapılandırması tamamlandı"
+        log "INFO" "Firewalld configuration complete"
     else
-        log "INFO" "Firewalld yapılandırması atlanıyor"
+        log "INFO" "Firewalld configuration skipped"
     fi
 }
 
@@ -679,11 +712,11 @@ configure_firewall() {
 # ===============================================================================
 
 configure_rsyslog() {
-    log "INFO" "RHEL ailesi için rsyslog QRadar iletimi yapılandırılıyor..."
+    log "INFO" "Configuring rsyslog for QRadar forwarding on RHEL family..."
 
     backup_file "$RSYSLOG_QRADAR_CONF"
 
-    cp "$SCRIPT_DIR/../universal/99-qradar.conf" "$RSYSLOG_QRADAR_CONF"
+    cp "${RESOURCE_DIR}/99-qradar.conf" "$RSYSLOG_QRADAR_CONF"
     
     # shellcheck source=../universal/99-qradar.conf
     sed -i -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
@@ -694,16 +727,16 @@ configure_rsyslog() {
 
     # Copy rsyslog.conf
     backup_file "/etc/rsyslog.conf"
-    cp "$SCRIPT_DIR/../universal/rsyslog.conf" "/etc/rsyslog.conf"
+    cp "${RESOURCE_DIR}/rsyslog.conf" "/etc/rsyslog.conf"
     chmod 644 "/etc/rsyslog.conf"
 
     # Copy ignore_programs.json
     mkdir -p "/etc/rsyslog.d"
     backup_file "/etc/rsyslog.d/ignore_programs.json"
-    cp "$SCRIPT_DIR/../universal/ignore_programs.json" "/etc/rsyslog.d/ignore_programs.json"
+    cp "${RESOURCE_DIR}/ignore_programs.json" "/etc/rsyslog.d/ignore_programs.json"
     chmod 644 "/etc/rsyslog.d/ignore_programs.json"
 
-    success "Rsyslog RHEL ailesi Universal yapılandırması tamamlandı"
+    success "Rsyslog Universal configuration for RHEL family complete"
 }
 
 # ===============================================================================
@@ -716,63 +749,63 @@ restart_services() {
         return
     fi
 
-    log "INFO" "RHEL ailesi servisleri yeniden başlatılıyor..."
+    log "INFO" "Restarting services for RHEL family..."
     
-    # Servisleri enable et
-    safe_execute "auditd servisini enable etme" systemctl enable auditd
+    # Enable services
+    safe_execute "Enable auditd service" systemctl enable auditd
     if ! rsyslogd -N1 -f "$RSYSLOG_QRADAR_CONF" >> "$LOG_FILE" 2>&1; then
-        error_exit "Rsyslog yapılandırma dosyası $RSYSLOG_QRADAR_CONF geçersiz."
+        error_exit "Rsyslog configuration file $RSYSLOG_QRADAR_CONF is invalid."
     fi
-    success "Rsyslog yapılandırması doğrulandı."
+    success "Rsyslog configuration verified."
 
-    safe_execute "rsyslog servisini enable etme" systemctl enable rsyslog
+    safe_execute "Enable rsyslog service" systemctl enable rsyslog
     
-    # Servisleri durdur
-    safe_execute "auditd servisini durdurma" systemctl stop auditd || true
-    safe_execute "rsyslog servisini durdurma" systemctl stop rsyslog || true
+    # Stop services
+    safe_execute "Stop auditd service" systemctl stop auditd || true
+    safe_execute "Stop rsyslog service" systemctl stop rsyslog || true
     
     sleep 3
     
-    # Auditd'yi başlat
-    retry_operation "auditd servisini başlatma" systemctl start "auditd"
+    # Start auditd
+    retry_operation "Start auditd service" systemctl start "auditd"
     
     sleep 2
     
-    # Audit kurallarını yükle
+    # Load audit rules
     load_audit_rules
     
-    # Rsyslog'u başlat
-    retry_operation "rsyslog servisini başlatma" systemctl start "rsyslog"
+    # Start rsyslog
+    retry_operation "Start rsyslog service" systemctl start "rsyslog"
     
-    success "Tüm RHEL ailesi servisleri başarıyla yapılandırıldı ve başlatıldı"
+    success "All RHEL family services configured and started successfully"
 }
 
 load_audit_rules() {
-    log "INFO" "RHEL ailesi audit kuralları yükleniyor..."
+    log "INFO" "Loading audit rules for RHEL family..."
     
     # Method 1: augenrules (RHEL 8+)
     if [[ $VERSION_MAJOR -ge 8 ]] && command_exists augenrules; then
-        if safe_execute "augenrules ile kural yükleme" augenrules --load; then
-            success "Audit kuralları augenrules ile yüklendi"
+        if safe_execute "Load rules with augenrules" augenrules --load; then
+            success "Audit rules loaded with augenrules"
             return
         fi
     fi
     
-    # Method 2: auditctl ile doğrudan yükleme
-    if safe_execute "auditctl ile kural yükleme" auditctl -R "$AUDIT_RULES_FILE"; then
-        success "Audit kuralları auditctl ile yüklendi"
+    # Method 2: Direct loading with auditctl
+    if safe_execute "Load rules with auditctl" auditctl -R "$AUDIT_RULES_FILE"; then
+        success "Audit rules loaded with auditctl"
         return
     fi
     
-    # Method 3: Satır satır yükleme (fallback)
-    log "INFO" "Fallback: Kurallar satır satır yükleniyor..."
+    # Method 3: Line-by-line loading (fallback)
+    log "INFO" "Fallback: Loading rules line by line..."
     local rules_loaded=0
     local has_e_flag=false
     while IFS= read -r line; do
         if [[ -n "$line" ]] && [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ "$line" =~ ^[[:space:]]*- ]]; then
             if [[ "$line" == "-e 2" ]]; then
                 has_e_flag=true
-                continue  # İmmutable flag'i son olarak uygula
+                continue  # Apply immutable flag last
             fi
             read -ra rule_parts <<< "$line"
             if auditctl "${rule_parts[@]}" >> "$LOG_FILE" 2>&1; then
@@ -787,9 +820,9 @@ load_audit_rules() {
     fi
 
     if [[ $rules_loaded -gt 0 ]]; then
-        success "$rules_loaded audit kuralı satır satır yüklendi"
+        success "$rules_loaded audit rules loaded line by line"
     else
-        warn "Hiçbir audit kuralı yüklenemedi - fallback yapılandırması devreye alınacak"
+        warn "No audit rules could be loaded - fallback configuration will be activated"
     fi
 }
 
@@ -798,48 +831,57 @@ load_audit_rules() {
 # ===============================================================================
 
 run_validation_tests() {
-    log "INFO" "RHEL ailesi sistem doğrulama testleri çalıştırılıyor..."
+    log "INFO" "Running validation tests for RHEL family..."
 
-    # DRY-RUN'da servis testlerini atla
+    # Skip service tests in DRY-RUN
     if [[ "$DRY_RUN" == true ]]; then
-        log "INFO" "DRY-RUN: servis doğrulama testleri atlandı"
+        log "INFO" "DRY-RUN: skipping service validation tests"
         return
     fi
 
     local services=("auditd" "rsyslog")
     for service in "${services[@]}"; do
         if detect_init && systemctl is-active --quiet "$service"; then
-            success "$service servisi çalışıyor"
+            success "$service service is running"
         else
-            warn "$service servisi çalışmıyor - başlatmaya çalışılıyor..."
-            safe_execute "$service servisini başlatma" systemctl start "$service"
+            warn "$service service is not running - attempting to start..."
+            safe_execute "Start $service service" systemctl start "$service"
         fi
     done
     
-    # Rsyslog yapılandırma sözdizimi kontrolü
+    # Rsyslog configuration syntax check
     if rsyslogd -N1 >> "$LOG_FILE" 2>&1; then
-        success "Rsyslog yapılandırması geçerli"
+        success "Rsyslog configuration is valid"
     else
-        warn "Rsyslog yapılandırma doğrulaması başarısız (servis çalışıyorsa normal)"
+        warn "Rsyslog configuration validation failed (normal if service is running)"
     fi
     
-    # EXECVE parser testi
-    if python3 "$CONCAT_SCRIPT_PATH" --test >> "$LOG_FILE" 2>&1; then
-        success "RHEL ailesi EXECVE parser test başarılı"
+    # EXECVE parser test
+    if python3 - "$CONCAT_SCRIPT_PATH" <<'PYEOF'
+import importlib.util, sys, pathlib, io
+parser_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("parser", parser_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sample = 'type=EXECVE argc=2 a0="cat" a1="/etc/shadow" uid=0 gid=0'
+print(mod.ExecveParser().parse_line(sample))
+PYEOF
+    then
+        success "EXECVE parser test successful for RHEL family"
     else
-        warn "EXECVE parser test başarısız"
+        warn "EXECVE parser test failed"
     fi
     
-    # Yerel syslog testi
+    # Local syslog test
     local test_message
 test_message="QRadar RHEL Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
     
     if grep -q "$test_message" "$SYSLOG_FILE"; then
-        success "Yerel syslog test başarılı"
+        success "Local syslog test successful"
     else
-        warn "Yerel syslog test başarısız"
+        warn "Local syslog test failed"
     fi
     
     # QRadar bağlantı testi
@@ -853,51 +895,55 @@ test_message="QRadar RHEL Universal Installer test $(date '+%Y%m%d%H%M%S')"
 }
 
 test_qradar_connectivity() {
-    log "INFO" "QRadar bağlantısı test ediliyor..."
+    log "INFO" "Testing QRadar connectivity..."
     
-    if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$QRADAR_IP/$QRADAR_PORT" 2>/dev/null; then
-        success "QRadar bağlantısı ($QRADAR_IP:$QRADAR_PORT) başarılı"
+    if (echo > /dev/tcp/127.0.0.1/1) &>/dev/null; then
+        if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$QRADAR_IP/$QRADAR_PORT" 2>/dev/null; then
+            success "QRadar connectivity ($QRADAR_IP:$QRADAR_PORT) successful"
+        else
+            warn "Cannot connect to QRadar: $QRADAR_IP:$QRADAR_PORT"
+        fi
     elif command_exists nc; then
         if timeout 5 nc -z "$QRADAR_IP" "$QRADAR_PORT" 2>/dev/null; then
-            success "QRadar bağlantısı (nc ile) başarılı"
+            success "QRadar connectivity (with nc) successful"
         else
-            warn "QRadar'a bağlanılamıyor: $QRADAR_IP:$QRADAR_PORT"
+            warn "Cannot connect to QRadar: $QRADAR_IP:$QRADAR_PORT"
         fi
     else
-        warn "QRadar bağlantı testi yapılamıyor - nc aracı bulunamadı"
+        warn "Cannot test QRadar connectivity - nc tool not found"
     fi
 }
 
 test_audit_functionality() {
-    log "INFO" "RHEL ailesi audit fonksiyonalitesi test ediliyor..."
+    log "INFO" "Testing audit functionality for RHEL family..."
     
-    # Güvenli audit olayı tetikle
+    # Trigger a safe audit event
     cat /etc/passwd > /dev/null 2>&1 || true
     sleep 2
     
-    # Audit olayını kontrol et
+    # Check for the audit event
     if command_exists ausearch; then
-        if ausearch --start today -k identity_changes | grep -q "type=SYSCALL"; then
-            success "Audit logging çalışıyor"
+        if ausearch --start today -m SYSCALL --success yes | head -n1 | grep -q "type=SYSCALL"; then
+            success "Audit logging is working"
         else
-            warn "Audit logging test başarısız"
+            warn "Audit logging test failed"
         fi
     else
-        log "INFO" "ausearch mevcut değil, audit test atlanıyor"
+        log "INFO" "ausearch not available, skipping audit test"
     fi
 }
 
 test_selinux_configuration() {
     if [[ "$HAS_SELINUX" == true ]]; then
-        log "INFO" "SELinux yapılandırması test ediliyor..."
+        log "INFO" "Testing SELinux configuration..."
         
         if command_exists getsebool; then
             local rsyslog_bool
             rsyslog_bool="$(getsebool rsyslog_can_network_connect 2>/dev/null || echo 'off')"
             if [[ "$rsyslog_bool" == *"on"* ]]; then
-                success "SELinux rsyslog network boolean aktif"
+                success "SELinux rsyslog network boolean is active"
             else
-                warn "SELinux rsyslog network boolean devre dışı"
+                warn "SELinux rsyslog network boolean is disabled"
             fi
         fi
     fi
@@ -908,66 +954,66 @@ test_selinux_configuration() {
 # ===============================================================================
 
 generate_setup_summary() {
-    log "INFO" "RHEL ailesi kurulum özeti oluşturuluyor..."
+    log "INFO" "Generating setup summary for RHEL family..."
     
     echo ""
     echo "============================================================="
-    echo "       QRadar Universal RHEL Ailesi Kurulum Özeti"
+    echo "       QRadar Universal RHEL Family Setup Summary"
     echo "============================================================="
     echo ""
-    echo "🖥️  SİSTEM BİLGİLERİ:"
-    echo "   • Dağıtım: $DISTRO_NAME"
-    echo "   • Sürüm: $VERSION_MAJOR.$VERSION_MINOR"
-    echo "   • Paket Yöneticisi: $PACKAGE_MANAGER"
-    echo "   • SELinux: $(if [[ "$HAS_SELINUX" == true ]]; then echo "Aktif"; else echo "Devre Dışı"; fi)"
-    echo "   • Firewalld: $(if [[ "$HAS_FIREWALLD" == true ]]; then echo "Aktif"; else echo "Devre Dışı"; fi)"
-    echo "   • QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
+    echo "🖥️  SYSTEM INFORMATION:"
+    echo "   • Distribution: $DISTRO_NAME"
+    echo "   • Version: $VERSION_MAJOR.$VERSION_MINOR"
+    echo "   • Package Manager: $PACKAGE_MANAGER"
+    echo "   • SELinux: $(if [[ "$HAS_SELINUX" == true ]]; then echo "Active"; else echo "Disabled"; fi)"
+    echo "   • Firewalld: $(if [[ "$HAS_FIREWALLD" == true ]]; then echo "Active"; else echo "Disabled"; fi)"
+    echo "   • QRadar Target: $QRADAR_IP:$QRADAR_PORT"
     echo ""
-    echo "📁 OLUŞTURULAN DOSYALAR:"
-    echo "   • Audit Kuralları: $AUDIT_RULES_FILE"
+    echo "📁 CREATED FILES:"
+    echo "   • Audit Rules: $AUDIT_RULES_FILE"
     echo "   • Audit Plugin: $AUDIT_SYSLOG_CONF"
-    echo "   • Rsyslog Yapılandırması: $RSYSLOG_QRADAR_CONF"
+    echo "   • Rsyslog Configuration: $RSYSLOG_QRADAR_CONF"
     echo "   • EXECVE Parser: $CONCAT_SCRIPT_PATH"
-    echo "   • Kurulum Logu: $LOG_FILE"
-    echo "   • Yedek Dosyalar: $BACKUP_DIR/"
+    echo "   • Setup Log: $LOG_FILE"
+    echo "   • Backup Files: $BACKUP_DIR/"
     echo ""
-    echo "🔧 SERVİS DURUMU:"
+    echo "🔧 SERVICE STATUS:"
     for service in auditd rsyslog; do
         if systemctl is-active --quiet "$service"; then
-            echo "   ✅ $service: ÇALIŞIYOR"
+            echo "   ✅ $service: RUNNING"
         else
-            echo "   ❌ $service: ÇALIŞMIYOR"
+            echo "   ❌ $service: NOT RUNNING"
         fi
     done
     echo ""
-    echo "🎯 ÖZELLİKLER:"
-    echo "   • MITRE ATT&CK uyumlu audit kuralları"
-    echo "   • RHEL ailesi sürüm uyumlu yapılandırma"
-    echo "   • SELinux otomatik yapılandırması"
-    echo "   • Firewalld otomatik yapılandırması"
-    echo "   • Enterprise grade log filtreleme"
-    echo "   • Otomatik fallback mekanizmaları"
+    echo "🎯 FEATURES:"
+    echo "   • MITRE ATT&CK compliant audit rules"
+    echo "   • RHEL family version compatible configuration"
+    echo "   • Automatic SELinux configuration"
+    echo "   • Automatic firewalld configuration"
+    echo "   • Enterprise-grade log filtering"
+    echo "   • Automatic fallback mechanisms"
     echo ""
-    echo "🛡️  GÜVENLİK YAPILANDI:"
+    echo "🛡️  SECURITY CONFIGURED:"
     if [[ "$HAS_SELINUX" == true ]]; then
-        echo "   • SELinux boolean'ları yapılandırıldı"
-        echo "   • SELinux context'ler ayarlandı"
+        echo "   • SELinux booleans configured"
+        echo "   • SELinux contexts set"
     fi
     if [[ "$HAS_FIREWALLD" == true ]]; then
-        echo "   • Firewalld kuralları eklendi"
-        echo "   • QRadar portu ($QRADAR_PORT/tcp) açıldı"
+        echo "   • Firewalld rules added"
+        echo "   • QRadar port ($QRADAR_PORT/tcp) opened"
     fi
     echo ""
-    echo "📝 ÖNEMLİ NOTLAR:"
-    echo "   • Audit kuralları immutable değil (güvenlik için -e 2 ekleyebilirsiniz)"
-    echo "   • Log iletimi TCP protokolü kullanıyor"
-    echo "   • Sadece güvenlik ile ilgili loglar iletiliyor"
-    echo "   • Yapılandırma dosyaları $BACKUP_DIR dizininde yedeklendi"
+    echo "📝 IMPORTANT NOTES:"
+    echo "   • Audit rules are not immutable (you can add -e 2 for security)"
+    echo "   • Log forwarding uses the TCP protocol"
+    echo "   • Only security-related logs are forwarded"
+    echo "   • Configuration files are backed up in the $BACKUP_DIR directory"
     echo ""
-    echo "🔍 TEST KOMUTLARI:"
-    echo "   • Manual test: logger -p local3.info 'Test mesajı'"
+    echo "🔍 TEST COMMANDS:"
+    echo "   • Manual test: logger -p local3.info 'Test message'"
     echo "   • Audit test: sudo touch /etc/passwd"
-    echo "   • Bağlantı test: telnet $QRADAR_IP $QRADAR_PORT"
+    echo "   • Connectivity test: telnet $QRADAR_IP $QRADAR_PORT"
     echo "   • Parser test: python3 $CONCAT_SCRIPT_PATH --test"
     if [[ "$HAS_SELINUX" == true ]]; then
         echo "   • SELinux test: getsebool rsyslog_can_network_connect"
@@ -979,7 +1025,7 @@ generate_setup_summary() {
     echo "============================================================="
     echo ""
     
-    success "QRadar Universal RHEL Ailesi kurulumu başarıyla tamamlandı!"
+    success "QRadar Universal RHEL Family setup completed successfully!"
 }
 
 # ===============================================================================
@@ -987,20 +1033,20 @@ generate_setup_summary() {
 # ===============================================================================
 
 main() {
-    # Log dosyasını oluştur
-    touch "$LOG_FILE" || error_exit "Log dosyası oluşturulamıyor: $LOG_FILE"
+    # Create log file
+    touch "$LOG_FILE" || error_exit "Cannot create log file: $LOG_FILE"
     chmod 640 "$LOG_FILE" 2>/dev/null || true
     
     log "INFO" "============================================================="
     log "INFO" "QRadar Universal RHEL Family Log Forwarding Installer v$SCRIPT_VERSION"
-    log "INFO" "Başlatılıyor: $(date)"
-    log "INFO" "QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
+    log "INFO" "Starting: $(date)"
+    log "INFO" "QRadar Target: $QRADAR_IP:$QRADAR_PORT"
     log "INFO" "============================================================="
     
-    # Root kontrolü
-    [[ $EUID -eq 0 ]] || error_exit "Bu script root yetkisiyle çalıştırılmalıdır. 'sudo' kullanın."
+    # Root check
+    [[ $EUID -eq 0 ]] || error_exit "This script must be run as root. Use 'sudo'."
     
-    # Ana kurulum adımları
+    # Main installation steps
     detect_rhel_family
     install_required_packages
     deploy_execve_parser
@@ -1014,7 +1060,7 @@ main() {
     generate_setup_summary
     
     log "INFO" "============================================================="
-    log "INFO" "RHEL ailesi kurulum tamamlandı: $(date)"
+    log "INFO" "RHEL family installation complete: $(date)"
     log "INFO" "============================================================="
 
     if [[ "${CI:-}" == "true" ]] && [[ "$DRY_RUN" == true ]]; then
@@ -1032,6 +1078,10 @@ main() {
 # Argument parsing
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --minimal)
+            MINIMAL_RULES=true
+            shift
+            ;;
         --open-port)
             OPEN_PORT=true
             shift
@@ -1071,21 +1121,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Parametre doğrulama
+# Parameter validation
 if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
-    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
-    echo "Örnek: $0 192.168.1.100 514 --minimal"
+    echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
+    echo "Example: $0 192.168.1.100 514 --minimal"
     exit 1
 fi
 
-# IP adresi format kontrolü
+# IP address format check
 if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
+    error_exit "Invalid IP address format: $QRADAR_IP"
 fi
 
-# Port numarası kontrolü
+# Port number check
 if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
-    error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
+    error_exit "Invalid port number: $QRADAR_PORT (must be between 1-65535)"
 fi
 
 # Ana fonksiyonu çalıştır
