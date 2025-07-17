@@ -199,8 +199,6 @@ run_specific_installer() {
 
     # Run the specific installer
     log "INFO" "Executing: $INSTALLER_PATH $QRADAR_IP $QRADAR_PORT ${specific_installer_args[*]}"
-    
-    export QRADAR_UNIVERSAL_LOG_FILE="$LOG_FILE"
 
     if "$INSTALLER_PATH" "$QRADAR_IP" "$QRADAR_PORT" "${specific_installer_args[@]}"; then
         success "Specific installer completed successfully"
