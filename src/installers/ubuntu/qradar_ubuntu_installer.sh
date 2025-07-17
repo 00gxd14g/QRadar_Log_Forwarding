@@ -159,11 +159,11 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_file
-backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_path
+        backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
-        cp "$file" "$backup_file" || warn "$file yedeklenemedi"
-        log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
+        cp "$file" "$backup_path" || warn "$file yedeklenemedi"
+        log "INFO" "$file dosyası $backup_path konumuna yedeklendi"
     fi
 }
 
