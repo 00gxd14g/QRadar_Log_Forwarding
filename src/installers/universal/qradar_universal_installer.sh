@@ -65,14 +65,14 @@ DRY_RUN=false
 # HELPER FUNCTIONS
 # ===============================================================================
 
-# Logging function
+# Unified logging function
 log() {
     local level="${1:-INFO}"
     local message="$2"
     local timestamp
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    echo "[$timestamp] [$level] [universal] $message" | tee -a "$LOG_FILE"
 }
 
 # Error handling
@@ -200,6 +200,8 @@ run_specific_installer() {
     # Run the specific installer
     log "INFO" "Executing: $INSTALLER_PATH $QRADAR_IP $QRADAR_PORT ${specific_installer_args[*]}"
     
+    export QRADAR_UNIVERSAL_LOG_FILE="$LOG_FILE"
+
     if "$INSTALLER_PATH" "$QRADAR_IP" "$QRADAR_PORT" "${specific_installer_args[@]}"; then
         success "Specific installer completed successfully"
     else
