@@ -41,7 +41,7 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-debian-universal"
-readonly LOG_FILE="qradar_debian_setup.log"
+readonly LOG_FILE="/var/log/qradar_debian_setup.log"
 BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 readonly BACKUP_DIR
 
@@ -76,7 +76,7 @@ detect_init() {
     [[ "$(cat /proc/1/comm 2>/dev/null)" == "systemd" ]]
 }
 
-# Geliştirilmiş logging fonksiyonu
+# Unified logging function
 log() {
     local level="${1:-INFO}"
     local message="$2"
@@ -84,6 +84,11 @@ log() {
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     
     echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+
+    # Also log to the universal log file
+    if [[ -n "${QRADAR_UNIVERSAL_LOG_FILE:-}" ]]; then
+        echo "[$timestamp] [$level] [debian] $message" >> "$QRADAR_UNIVERSAL_LOG_FILE"
+    fi
 }
 
 # Hata yönetimi
