@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "nomatch": "PASS",
   "type": "string",
   "table": [
@@ -25,6 +25,12 @@
     {"index": "gdm", "value": "IGNORE"},
     {"index": "udisks2", "value": "IGNORE"},
     {"index": "rtkit-daemon", "value": "IGNORE"},
-    {"index": "accounts-daemon", "value": "IGNORE"}
+    {"index": "accounts-daemon", "value": "IGNORE"},
+    {"index": "chronyd", "value": "IGNORE"},
+    {"index": "crond", "value": "IGNORE"},
+    {"index": "atd", "value": "IGNORE"},
+    {"index": "irqbalance", "value": "IGNORE"},
+    {"index": "sssd", "value": "IGNORE"},
+    {"index": "tuned", "value": "IGNORE"}
   ]
 }
