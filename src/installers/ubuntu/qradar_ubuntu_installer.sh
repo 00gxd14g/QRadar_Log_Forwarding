@@ -41,7 +41,7 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
 readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
-readonly LOG_FILE="qradar_ubuntu_setup.log"
+readonly LOG_FILE="/var/log/qradar_ubuntu_setup.log"
 BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 readonly BACKUP_DIR
 
@@ -72,8 +72,6 @@ USE_MINIMAL_RULES=false
 # YARDIMCI FONKSİYONLAR
 # ===============================================================================
 
-# shellcheck source=../universal/common_functions.sh
-source "$SCRIPT_DIR/../universal/common_functions.sh"
 
 
 # ===============================================================================
