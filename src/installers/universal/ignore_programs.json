@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "nomatch": "PASS",
+  "type": "string",
+  "table": [
+    {"index": "systemd", "value": "IGNORE"},
+    {"index": "systemd-resolved", "value": "IGNORE"},
+    {"index": "systemd-timesyncd", "value": "IGNORE"},
+    {"index": "systemd-networkd", "value": "IGNORE"},
+    {"index": "systemd-journald", "value": "IGNORE"},
+    {"index": "systemd-logind", "value": "IGNORE"},
+    {"index": "snapd", "value": "IGNORE"},
+    {"index": "packagekitd", "value": "IGNORE"},
+    {"index": "polkitd", "value": "IGNORE"},
+    {"index": "dbus", "value": "IGNORE"},
+    {"index": "dbus-daemon", "value": "IGNORE"},
+    {"index": "NetworkManager", "value": "IGNORE"},
+    {"index": "ModemManager", "value": "IGNORE"},
+    {"index": "wpa_supplicant", "value": "IGNORE"},
+    {"index": "avahi-daemon", "value": "IGNORE"},
+    {"index": "colord", "value": "IGNORE"},
+    {"index": "cups", "value": "IGNORE"},
+    {"index": "cups-browsed", "value": "IGNORE"},
+    {"index": "gnome-shell", "value": "IGNORE"},
+    {"index": "gdm", "value": "IGNORE"},
+    {"index": "udisks2", "value": "IGNORE"},
+    {"index": "rtkit-daemon", "value": "IGNORE"},
+    {"index": "accounts-daemon", "value": "IGNORE"}
+  ]
+}

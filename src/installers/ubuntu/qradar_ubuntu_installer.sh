@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 #
 # ===============================================================================
-# QRadar Universal Linux Log Forwarding Installer v5.0.0
+# QRadar Universal Ubuntu Log Forwarding Installer v4.0.0
 # ===============================================================================
 #
-# This script is designed to install and configure QRadar SIEM log forwarding
-# on all major Linux distributions, including:
-#   - Ubuntu (16.04+)
-#   - Debian (9+)
-#   - RHEL (7+)
-#   - CentOS (7+)
-#   - Fedora (30+)
+# Bu script, tüm Ubuntu sürümlerinde (16.04+) çalışacak şekilde tasarlanmış
+# QRadar SIEM log iletimi kurulum scriptıdir.
 #
-# Features:
-#   - Automatic OS detection and compatibility
-#   - Comprehensive security monitoring (MITRE ATT&CK compliant)
-#   - EXECVE command concatenation
-#   - Secure command execution (no eval)
-#   - Automatic error correction and fallback mechanisms
-#   - Comprehensive backup and recovery system
+# Desteklenen Ubuntu Sürümleri:
+#   - Ubuntu 16.04 LTS (Xenial Xerus)
+#   - Ubuntu 18.04 LTS (Bionic Beaver)
+#   - Ubuntu 20.04 LTS (Focal Fossa)
+#   - Ubuntu 22.04 LTS (Jammy Jellyfish)
+#   - Ubuntu 24.04 LTS (Noble Numbat)
+#   - Tüm ara sürümler ve gelecek sürümler
 #
-# Usage: sudo bash qradar_universal_installer.sh <QRADAR_IP> <QRADAR_PORT>
+# Özellikler:
+#   - Otomatik Ubuntu sürüm tespiti ve uyumluluk
+#   - Kapsamlı güvenlik monitoring (MITRE ATT&CK uyumlu)
+#   - EXECVE komut birleştirme (command concatenation)
+#   - Güvenli komut çalıştırma (eval kullanmaz)
+#   - Otomatik hata düzeltme ve fallback mekanizmaları
+#   - Comprehensive backup ve recovery sistemi
 #
-# Example: sudo bash qradar_universal_installer.sh 192.168.1.100 514
+# Kullanım: sudo bash qradar_ubuntu_installer.sh <QRADAR_IP> <QRADAR_PORT>
 #
-# Author: QRadar Log Forwarding Project
-# Version: 5.0.0 - Universal Linux Edition
+# Örnek: sudo bash qradar_ubuntu_installer.sh 192.168.1.100 514
+#
+# Yazar: QRadar Log Forwarding Projesi
+# Sürüm: 4.0.0 - Universal Ubuntu Edition
 # ===============================================================================
 
 set -Eeuo pipefail
@@ -37,12 +40,12 @@ trap 'error_exit "Unexpected failure (line: $LINENO)"' ERR
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd -P)"
 readonly SCRIPT_DIR
-readonly SCRIPT_VERSION="5.0.0-linux-universal"
-readonly LOG_FILE="qradar_universal_setup.log"
+readonly SCRIPT_VERSION="4.0.0-ubuntu-universal"
+readonly LOG_FILE="qradar_ubuntu_setup.log"
 BACKUP_DIR="/etc/qradar_backup_$(date +%Y%m%d_%H%M%S)"
 readonly BACKUP_DIR
 
-# File paths
+# Dosya yolları
 readonly AUDIT_RULES_FILE="/etc/audit/rules.d/99-qradar.rules"
 readonly AUDISP_PLUGINS_DIR="/etc/audisp/plugins.d"
 readonly AUDIT_PLUGINS_DIR="/etc/audit/plugins.d"
@@ -50,18 +53,16 @@ readonly AUDIT_SYSLOG_CONF="/etc/audit/plugins.d/syslog.conf"
 readonly RSYSLOG_QRADAR_CONF="/etc/rsyslog.d/99-qradar.conf"
 readonly CONCAT_SCRIPT_PATH="/usr/local/bin/qradar_execve_parser.py"
 
-# System information
-OS_ID=""
-OS_VERSION_ID=""
-OS_CODENAME=""
-OS_VERSION_MAJOR=""
-OS_VERSION_MINOR=""
-PKG_MANAGER=""
+# Sistem bilgileri
+UBUNTU_VERSION=""
+UBUNTU_CODENAME=""
+VERSION_MAJOR=""
+VERSION_MINOR=""
 AUDISP_METHOD=""
 AUDISP_SYSLOG_CONF=""
-SYSLOG_FILE="/var/log/syslog" # Default, will be updated based on OS
+SYSLOG_FILE="/var/log/syslog"
 
-# Script parameters
+# Script parametreleri
 QRADAR_IP=""
 QRADAR_PORT=""
 DRY_RUN=false
@@ -159,86 +160,83 @@ backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
     fi
 }
 
+
 # ===============================================================================
 # SİSTEM TESPİTİ VE DOĞRULAMA
 # ===============================================================================
 
-detect_os() {
-    log "INFO" "İşletim sistemi tespit ediliyor..."
+detect_ubuntu_version() {
+    log "INFO" "Ubuntu sürümü tespit ediliyor..."
 
     if [[ ! -f /etc/os-release ]]; then
-        error_exit "/etc/os-release dosyası bulunamadı. Sistem doğrulanamıyor."
+        error_exit "/etc/os-release dosyası bulunamadı. Ubuntu sistemi doğrulanamıyor."
     fi
 
     # shellcheck source=/etc/os-release
     source /etc/os-release
 
-    OS_ID="${ID:-}"
-    OS_VERSION_ID="${VERSION_ID:-}"
-    OS_CODENAME="${VERSION_CODENAME:-}"
+    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    if [[ -z "${ID:-}" ]]; then
+        error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
 
-    case "$OS_ID" in
-        ubuntu)
-            log "INFO" "Ubuntu sistemi tespit edildi"
-            PKG_MANAGER="apt-get"
-            SYSLOG_FILE="/var/log/syslog"
-            ;;
-        debian|kali)
-            log "INFO" "Debian/Kali sistemi tespit edildi"
-            PKG_MANAGER="apt-get"
-            SYSLOG_FILE="/var/log/syslog"
-            ;;
-        rhel|centos|rocky|almalinux|ol|amzn)
-            log "INFO" "RHEL ailesi dağıtım tespit edildi: $ID"
-            if [[ "$ID" == "amzn" ]] || [[ "${VERSION_ID%%.*}" -lt 8 ]]; then
-                PKG_MANAGER="yum"
-            else
-                PKG_MANAGER="dnf"
-            fi
-            SYSLOG_FILE="/var/log/messages"
-            ;;
-        *)
-            error_exit "Desteklenmeyen işletim sistemi: $ID"
-            ;;
-    esac
+    if [[ -z "${VERSION_ID:-}" ]]; then
+        error_exit "VERSION_ID değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
 
-    IFS='.' read -r OS_VERSION_MAJOR OS_VERSION_MINOR <<< "$OS_VERSION_ID"
+    if [[ -z "${VERSION_CODENAME:-}" ]]; then
+        error_exit "VERSION_CODENAME değişkeni /etc/os-release dosyasında bulunamadı"
+    fi
 
-    success "$PRETTY_NAME tespit edildi ve destekleniyor"
+    if [[ "$ID" != "ubuntu" ]]; then
+        error_exit "Bu script sadece Ubuntu sistemler için tasarlanmıştır. Tespit edilen: $ID"
+    fi
 
+    UBUNTU_VERSION="$VERSION_ID"
+    UBUNTU_CODENAME="$VERSION_CODENAME"
+
+    # Sürüm numarasını parçala
+    IFS='.' read -r VERSION_MAJOR VERSION_MINOR <<< "$UBUNTU_VERSION"
+
+    # Version değerlerini kontrol et
+    if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
+    fi
+
+    if [[ -z "$VERSION_MINOR" ]] || [[ ! "$VERSION_MINOR" =~ ^[0-9]+$ ]]; then
+        error_exit "VERSION_MINOR değeri geçersiz: '$VERSION_MINOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
+    fi
+
+    # Ubuntu 16.04+ kontrolü
+    if [[ $VERSION_MAJOR -lt 16 ]] || [[ $VERSION_MAJOR -eq 16 && $VERSION_MINOR -lt 4 ]]; then
+        error_exit "Bu script Ubuntu 16.04+ sürümlerini destekler. Mevcut sürüm: $UBUNTU_VERSION"
+    fi
+
+    success "Ubuntu $UBUNTU_VERSION ($UBUNTU_CODENAME) tespit edildi ve destekleniyor"
+
+    # Sürüme göre audisp metodunu belirle
     determine_audisp_method
 }
 
 determine_audisp_method() {
-    log "INFO" "Sürüme göre audisp metodu belirleniyor..."
+    log "INFO" "Ubuntu sürümüne göre audisp metodu belirleniyor..."
 
-    case "$OS_ID" in
-        ubuntu)
-            if [[ "$OS_VERSION_MAJOR" -lt 20 ]]; then
-                AUDISP_METHOD="legacy"
-            else
-                AUDISP_METHOD="modern"
-            fi
-            ;;
-        debian|kali)
-            if [[ "$OS_ID" == "kali" ]] || [[ "$OS_VERSION_MAJOR" -ge 10 ]]; then
-                AUDISP_METHOD="modern"
-            else
-                AUDISP_METHOD="legacy"
-            fi
-            ;;
-        rhel|centos|rocky|almalinux|ol|amzn)
-            AUDISP_METHOD="modern"
-            ;;
-    esac
-
-    if [[ "$AUDISP_METHOD" == "legacy" ]]; then
+    # Ubuntu 16.04-19.10: /etc/audisp/plugins.d/
+    # Ubuntu 20.04+: /etc/audit/plugins.d/
+    if [[ $VERSION_MAJOR -lt 20 ]]; then
+        AUDISP_METHOD="legacy"
         AUDISP_SYSLOG_CONF="$AUDISP_PLUGINS_DIR/syslog.conf"
         log "INFO" "Legacy audisp metodu kullanılacak (/etc/audisp/plugins.d/)"
-        mkdir -p "$AUDISP_PLUGINS_DIR"
     else
+        AUDISP_METHOD="modern"
         AUDISP_SYSLOG_CONF="$AUDIT_SYSLOG_CONF"
         log "INFO" "Modern audit metodu kullanılacak (/etc/audit/plugins.d/)"
+    fi
+
+    # Dizinleri kontrol et ve oluştur
+    if [[ "$AUDISP_METHOD" == "legacy" ]]; then
+        mkdir -p "$AUDISP_PLUGINS_DIR"
+    else
         mkdir -p "$AUDIT_PLUGINS_DIR"
     fi
 }
@@ -250,42 +248,39 @@ determine_audisp_method() {
 install_required_packages() {
     log "INFO" "Gerekli paketler kontrol ediliyor ve kuruluyor..."
 
+    # Ubuntu sürümüne göre paket listesi
     local required_packages=("auditd" "rsyslog" "python3")
-    if [[ "$PKG_MANAGER" == "apt-get" ]]; then
-        if [[ "$AUDISP_METHOD" == "legacy" ]]; then
-            required_packages+=("audispd-plugins")
-        fi
 
-        export DEBIAN_FRONTEND=noninteractive
-        retry_operation "Paket listesi güncelleme" apt-get update
-    else # yum/dnf
-        if [[ "$OS_VERSION_MAJOR" -eq 7 ]]; then
-            required_packages=("audit" "rsyslog" "python3" "audispd-plugins")
-        fi
+    # Ubuntu 16.04-19.10 için audispd-plugins
+    if [[ $VERSION_MAJOR -lt 20 ]]; then
+        required_packages+=("audispd-plugins")
     fi
 
     local packages_to_install=()
 
+    # Paket listesini güncelle
+    retry_operation "Paket listesi güncelleme" apt-get update
+
+    # Hangi paketlerin kurulu olmadığını kontrol et
     for package in "${required_packages[@]}"; do
-        if [[ "$PKG_MANAGER" == "apt-get" ]]; then
-            if ! dpkg -l | grep -q "^ii.*$package "; then
-                packages_to_install+=("$package")
-            fi
+        if ! dpkg -l | grep -q "^ii.*$package "; then
+            packages_to_install+=("$package")
+            log "INFO" "$package paketi kurulu değil"
         else
-            if ! rpm -q "$package" >/dev/null 2>&1; then
-                packages_to_install+=("$package")
-            fi
+            log "INFO" "$package paketi zaten kurulu"
         fi
     done
 
+    # Eksik paketleri kur
     if [[ ${#packages_to_install[@]} -gt 0 ]]; then
         log "INFO" "Kurulacak paketler: ${packages_to_install[*]}"
-        retry_operation "Paket kurulumu" "$PKG_MANAGER" install -y "${packages_to_install[@]}"
+        retry_operation "Paket kurulumu" apt-get install -y "${packages_to_install[@]}"
         success "Paketler başarıyla kuruldu: ${packages_to_install[*]}"
     else
         success "Tüm gerekli paketler zaten kurulu"
     fi
 
+    # Kritik binary'leri doğrula
     local critical_binaries=("/sbin/auditd" "/usr/sbin/rsyslogd" "/usr/bin/python3")
     for binary in "${critical_binaries[@]}"; do
         if [[ ! -f "$binary" ]]; then
@@ -305,7 +300,7 @@ deploy_execve_parser() {
 
     backup_file "$CONCAT_SCRIPT_PATH"
 
-    # Create the execve parser script directly
+    # Embed the execve parser script directly
     cat > "$CONCAT_SCRIPT_PATH" << 'EXECVE_PARSER_EOF'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -317,7 +312,7 @@ It combines multi-part arguments, maps commands to MITRE ATT&CK techniques,
 and enriches logs with human-readable user and group names.
 
 Version: 1.0.0
-Author: QRadar Log Forwarding Project
+Author: Gemini
 """
 
 import sys
@@ -485,12 +480,6 @@ class ExecveParser:
 
 
 if __name__ == "__main__":
-    # Check if --test argument is provided
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        # Simple test mode
-        print("EXECVE parser is working correctly")
-        sys.exit(0)
-
     parser = ExecveParser()
     parser.run()
 EXECVE_PARSER_EOF
@@ -505,7 +494,7 @@ EXECVE_PARSER_EOF
         warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
     fi
 
-    # Deploy helper scripts
+    # Embed helper scripts
     cat > "/usr/local/bin/extract_audit_type.sh" << 'AUDIT_TYPE_EOF'
 #!/bin/bash
 # Audit log tipini çıkar
@@ -548,12 +537,12 @@ configure_auditd() {
     fi
 
     chmod 640 "$AUDIT_RULES_FILE"
-    success "Universal audit kuralları yapılandırıldı"
+    success "Ubuntu Universal audit kuralları yapılandırıldı"
 }
 
 create_minimal_audit_rules() {
     cat > "$AUDIT_RULES_FILE" << 'MINIMAL_AUDIT_RULES_EOF'
-# QRadar Minimal Universal Audit Rules v5.0.0
+# QRadar Minimal Ubuntu Audit Rules v4.0.0
 # Düşük EPS ortamları için optimize edilmiş güvenlik audit kuralları
 
 # Buffer ayarları
@@ -609,7 +598,7 @@ MINIMAL_AUDIT_RULES_EOF
 
 create_full_audit_rules() {
     cat > "$AUDIT_RULES_FILE" << 'FULL_AUDIT_RULES_EOF'
-# QRadar Universal Linux Audit Rules v5.0.0
+# QRadar Universal Ubuntu Audit Rules v4.0.0
 # MITRE ATT&CK Framework uyumlu kapsamlı güvenlik audit kuralları
 # Based on auditd-attack-mitre project
 
@@ -983,13 +972,22 @@ FULL_AUDIT_RULES_EOF
 # ===============================================================================
 
 configure_audisp() {
-    log "INFO" "Audisp yapılandırılıyor..."
+    log "INFO" "Ubuntu sürümüne göre audisp yapılandırılıyor..."
 
     backup_file "$AUDISP_SYSLOG_CONF"
 
+    # Sürüme göre uygun dizini oluştur
+    if [[ "$AUDISP_METHOD" == "legacy" ]]; then
+        mkdir -p "$AUDISP_PLUGINS_DIR"
+        log "INFO" "Legacy audisp yapılandırması (Ubuntu $UBUNTU_VERSION)"
+    else
+        mkdir -p "$AUDIT_PLUGINS_DIR"
+        log "INFO" "Modern audit yapılandırması (Ubuntu $UBUNTU_VERSION)"
+    fi
+
     # Syslog plugin yapılandırması
     cat > "$AUDISP_SYSLOG_CONF" << 'EOF'
-# QRadar Universal Linux Audisp Configuration
+# QRadar Universal Ubuntu Audisp Configuration
 active = yes
 direction = out
 path = builtin_syslog
@@ -1013,8 +1011,8 @@ configure_rsyslog() {
 
     # Create 99-qradar.conf directly
     cat > "$RSYSLOG_QRADAR_CONF" << EOF
-# QRadar Log Forwarding Configuration v5.0.0
-# Universal Linux Edition
+# QRadar Log Forwarding Configuration v4.2.1
+# Ubuntu Universal Edition
 
 # Global settings
 module(load="omfwd")
@@ -1025,14 +1023,14 @@ module(load="imfile")
 # Template for QRadar
 template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
 
-# Template for QRadar Linux format
-template(name="QRadarLinuxFormat" type="string"
-    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% linux-audit: type=\$.audit_type auid=\$.auid uid=\$.uid euid=\$.euid pid=\$.pid exe=\$.exe success=\$.success key=\$.key cmd=\$.full_command %msg%\\n"
+# Template for QRadar Ubuntu format
+template(name="QRadarUbuntuFormat" type="string"
+    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% ubuntu-audit: type=\$.audit_type auid=\$.auid uid=\$.uid euid=\$.euid pid=\$.pid exe=\$.exe success=\$.success key=\$.key cmd=\$.full_command %msg%\\n"
 )
 
-# LEEF v2 Template for Linux
-template(name="LEEFv2Linux" type="string"
-    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% LEEF:2.0|Linux|Universal|$OS_VERSION_ID|%app-name%|devTime=%TIMESTAMP:::date-unixtimestamp%|devTimeFormat=epoch|cat=Audit|sev=\$.severity|usrName=\$.uid_name|src=\$.src_ip|dst=\$.dst_ip|proto=\$.protocol|srcPort=\$.src_port|dstPort=\$.dst_port|cmd=\$.full_command|fileName=\$.filename|fileHash=\$.hash|processId=\$.pid|parentProcessId=\$.ppid|identSrc=\$.auid|accountName=\$.acct|reason=\$.reason%msg%\\n"
+# LEEF v2 Template for Ubuntu
+template(name="LEEFv2Ubuntu" type="string"
+    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% LEEF:2.0|Linux|Ubuntu|$UBUNTU_VERSION|%app-name%|devTime=%TIMESTAMP:::date-unixtimestamp%|devTimeFormat=epoch|cat=Audit|sev=\$.severity|usrName=\$.uid_name|src=\$.src_ip|dst=\$.dst_ip|proto=\$.protocol|srcPort=\$.src_port|dstPort=\$.dst_port|cmd=\$.full_command|fileName=\$.filename|fileHash=\$.hash|processId=\$.pid|parentProcessId=\$.ppid|identSrc=\$.auid|accountName=\$.acct|reason=\$.reason%msg%\\n"
 )
 
 # Main queue for reliable forwarding
@@ -1076,7 +1074,7 @@ ruleset(name="qradar_audit") {
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="LEEFv2Linux"
+        template="LEEFv2Ubuntu"
         queue.type="linkedList"
         queue.size="50000"
         action.resumeRetryCount="-1"
@@ -1088,7 +1086,7 @@ ruleset(name="qradar_audit") {
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="QRadarLinuxFormat"
+        template="QRadarUbuntuFormat"
         queue.type="linkedList"
         queue.size="50000"
         action.resumeRetryCount="-1"
@@ -1247,7 +1245,7 @@ rule=:%type:word% msg=audit(%audit_epoch:number%:%audit_counter:number%): argc=%
 AUDIT_RULEBASE_EOF
     chmod 644 "/etc/rsyslog.d/audit.rulebase"
 
-    success "Rsyslog Universal yapılandırması tamamlandı"
+    success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
 }
 
 # ===============================================================================
@@ -1323,7 +1321,7 @@ ruleset(name="direct_audit_processing") {
             target="$QRADAR_IP"
             port="$QRADAR_PORT"
             protocol="tcp"
-            template="LEEFv2Linux"
+            template="LEEFv2Ubuntu"
             queue.type="linkedlist"
             queue.size="25000"
             action.resumeRetryCount="-1"
@@ -1335,7 +1333,7 @@ ruleset(name="direct_audit_processing") {
             target="$QRADAR_IP"
             port="$QRADAR_PORT"
             protocol="tcp"
-            template="QRadarLinuxFormat"
+            template="QRadarUbuntuFormat"
             queue.type="linkedlist"
             queue.size="25000"
             action.resumeRetryCount="-1"
@@ -1352,7 +1350,7 @@ ruleset(name="direct_audit_processing") {
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="LEEFv2Linux"
+        template="LEEFv2Ubuntu"
         queue.type="linkedlist"
         queue.size="25000"
         action.resumeRetryCount="-1"
@@ -1365,7 +1363,7 @@ ruleset(name="direct_audit_processing") {
         target="$QRADAR_IP"
         port="$QRADAR_PORT"
         protocol="tcp"
-        template="QRadarLinuxFormat"
+        template="QRadarUbuntuFormat"
         queue.type="linkedlist"
         queue.size="25000"
         action.resumeRetryCount="-1"
@@ -1418,7 +1416,7 @@ restart_services() {
 load_audit_rules() {
     log "INFO" "Audit kuralları yükleniyor..."
 
-    # Method 1: augenrules
+    # Method 1: augenrules (Ubuntu 16.04+)
     if command_exists augenrules; then
         if safe_execute "augenrules ile kural yükleme" augenrules --load; then
             success "Audit kuralları augenrules ile yüklendi"
@@ -1493,7 +1491,7 @@ run_validation_tests() {
 
     # Yerel syslog testi
     local test_message
-test_message="QRadar Universal Linux Installer test $(date '+%Y%m%d%H%M%S')"
+test_message="QRadar Ubuntu Universal Installer test $(date '+%Y%m%d%H%M%S')"
     logger -p user.info "$test_message"
     sleep 3
 
@@ -1554,11 +1552,11 @@ generate_setup_summary() {
 
     echo ""
     echo "============================================================="
-    echo "           QRadar Universal Linux Kurulum Özeti"
+    echo "           QRadar Universal Ubuntu Kurulum Özeti"
     echo "============================================================="
     echo ""
     echo "🖥️  SİSTEM BİLGİLERİ:"
-    echo "   • Dağıtım: $PRETTY_NAME"
+    echo "   • Ubuntu Sürümü: $UBUNTU_VERSION ($UBUNTU_CODENAME)"
     echo "   • Audisp Metodu: $AUDISP_METHOD"
     echo "   • QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
     if [[ "$USE_MINIMAL_RULES" == true ]]; then
@@ -1587,7 +1585,7 @@ generate_setup_summary() {
     echo "🎯 ÖZELLİKLER:"
     echo "   • MITRE ATT&CK uyumlu audit kuralları"
     echo "   • Otomatik EXECVE komut birleştirme"
-    echo "   • Otomatik OS tespiti ve uyumlu yapılandırma"
+    echo "   • Ubuntu sürüm uyumlu yapılandırma"
     echo "   • Güvenlik odaklı log filtreleme"
     echo "   • Otomatik fallback mekanizmaları"
     echo "   • Kapsamlı hata yönetimi"
@@ -1607,7 +1605,7 @@ generate_setup_summary() {
     echo "============================================================="
     echo ""
 
-    success "QRadar Universal Linux kurulumu başarıyla tamamlandı!"
+    success "QRadar Universal Ubuntu kurulumu başarıyla tamamlandı!"
 }
 
 # ===============================================================================
@@ -1620,7 +1618,7 @@ main() {
     chmod 640 "$LOG_FILE" 2>/dev/null || true
 
     log "INFO" "============================================================="
-    log "INFO" "QRadar Universal Linux Log Forwarding Installer v$SCRIPT_VERSION"
+    log "INFO" "QRadar Universal Ubuntu Log Forwarding Installer v$SCRIPT_VERSION"
     log "INFO" "Başlatılıyor: $(date)"
     log "INFO" "QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
     log "INFO" "============================================================="
@@ -1629,7 +1627,7 @@ main() {
     [[ $EUID -eq 0 ]] || error_exit "Bu script root yetkisiyle çalıştırılmalıdır. 'sudo' kullanın."
 
     # Ana kurulum adımları
-    detect_os
+    detect_ubuntu_version
     install_required_packages
     deploy_execve_parser
     configure_auditd
@@ -1661,7 +1659,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "QRadar Universal Linux Installer v$SCRIPT_VERSION"
+            echo "QRadar Universal Ubuntu Installer v$SCRIPT_VERSION"
             echo ""
             echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
             echo ""
