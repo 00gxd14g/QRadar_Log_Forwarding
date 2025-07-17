@@ -158,13 +158,18 @@ retry_operation() {
 # Dosya yedekleme
 backup_file() {
     local file="$1"
-    if [[ -f "$file" ]]; then
-        local backup_path
-        backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
-        mkdir -p "$BACKUP_DIR"
-        cp "$file" "$backup_path" || warn "$file yedeklenemedi"
-        log "INFO" "$file dosyası $backup_path konumuna yedeklendi"
-    fi
+
+    # OLD (triggers SC2155) --------------------------------------
+    # local backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+
+    # NEW ---------------------------------------------------------
+    local backup_path
+    backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+    # -------------------------------------------------------------
+
+    mkdir -p "$BACKUP_DIR"
+    cp "$file" "$backup_path" || warn "$file yedeklenemedi"
+    log "INFO" "$file dosyası $backup_path konumuna yedeklendi"
 }
 
 
