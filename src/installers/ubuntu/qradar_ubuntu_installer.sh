@@ -4,30 +4,30 @@
 # QRadar Universal Ubuntu Log Forwarding Installer v4.0.0
 # ===============================================================================
 #
-# Bu script, tüm Ubuntu sürümlerinde (16.04+) çalışacak şekilde tasarlanmış
-# QRadar SIEM log iletimi kurulum scriptıdir.
+# This script is designed to work on all Ubuntu versions (16.04+)
+# QRadar SIEM log forwarding installation script.
 #
-# Desteklenen Ubuntu Sürümleri:
+# Supported Ubuntu Versions:
 #   - Ubuntu 16.04 LTS (Xenial Xerus)
 #   - Ubuntu 18.04 LTS (Bionic Beaver)
 #   - Ubuntu 20.04 LTS (Focal Fossa)
 #   - Ubuntu 22.04 LTS (Jammy Jellyfish)
 #   - Ubuntu 24.04 LTS (Noble Numbat)
-#   - Tüm ara sürümler ve gelecek sürümler
+#   - All intermediate and future versions
 #
-# Özellikler:
-#   - Otomatik Ubuntu sürüm tespiti ve uyumluluk
-#   - Kapsamlı güvenlik monitoring (MITRE ATT&CK uyumlu)
-#   - EXECVE komut birleştirme (command concatenation)
-#   - Güvenli komut çalıştırma (eval kullanmaz)
-#   - Otomatik hata düzeltme ve fallback mekanizmaları
-#   - Comprehensive backup ve recovery sistemi
+# Features:
+#   - Automatic Ubuntu version detection and compatibility
+#   - Comprehensive security monitoring (MITRE ATT&CK compliant)
+#   - EXECVE command concatenation
+#   - Secure command execution (no eval)
+#   - Automatic error correction and fallback mechanisms
+#   - Comprehensive backup and recovery system
 #
-# Kullanım: sudo bash qradar_ubuntu_installer.sh <QRADAR_IP> <QRADAR_PORT>
+# Usage: sudo bash qradar_ubuntu_installer.sh <QRADAR_IP> <QRADAR_PORT>
 #
-# Örnek: sudo bash qradar_ubuntu_installer.sh 192.168.1.100 514
+# Example: sudo bash qradar_ubuntu_installer.sh 192.168.1.100 514
 #
-# Yazar: QRadar Log Forwarding Projesi
+# Author: QRadar Log Forwarding Project
 # Sürüm: 4.0.0 - Universal Ubuntu Edition
 # ===============================================================================
 
@@ -94,43 +94,57 @@ log() {
     fi
 }
 
-# Hata yönetimi
+# Error handling
 error_exit() {
     log "ERROR" "$1"
-    echo "HATA: $1" >&2
-    echo "Detaylar için $LOG_FILE dosyasını kontrol edin."
+    echo "ERROR: $1" >&2
+    echo "Check $LOG_FILE for details."
     exit 1
 }
 
-# Uyarı mesajı
+# Warning message
 warn() {
     log "WARN" "$1"
-    echo "UYARI: $1" >&2
+    echo "WARNING: $1" >&2
 }
 
-# Başarı mesajı
+# Success message
 success() {
     log "SUCCESS" "$1"
     echo "✓ $1"
 }
 
-# Komut varlığı kontrolü
+# Command existence check
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Güvenli komut çalıştırma (eval kullanmaz)
+# Check if we need sudo
+need_sudo() {
+    [[ $EUID -ne 0 ]] && command_exists sudo
+}
+
+# Execute command with or without sudo
+execute_with_privilege() {
+    if need_sudo; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
+# Secure command execution (no eval)
 safe_execute() {
     local description="$1"
     shift
-    log "DEBUG" "Çalıştırılıyor: $description - Komut: $*"
+    log "DEBUG" "Executing: $description - Command: $*"
     
     if "$@" >> "$LOG_FILE" 2>&1; then
-        log "DEBUG" "$description - BAŞARILI"
+        log "DEBUG" "$description - SUCCESS"
         return 0
     else
         local exit_code=$?
-        warn "$description - BAŞARISIZ (Çıkış kodu: $exit_code)"
+        warn "$description - FAILED (Exit code: $exit_code)"
         return $exit_code
     fi
 }
@@ -143,7 +157,7 @@ retry_operation() {
     shift
     
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if safe_execute "$description (Deneme $attempt/$max_attempts)" "$@"; then
+        if safe_execute "$description (Attempt $attempt/$max_attempts)" "$@"; then
             return 0
         fi
         if [[ $attempt -lt $max_attempts ]]; then
@@ -152,7 +166,7 @@ retry_operation() {
         fi
     done
     
-    error_exit "$description $max_attempts denemeden sonra başarısız oldu"
+    error_exit "$description failed after $max_attempts attempts"
 }
 
 # Dosya yedekleme
@@ -178,7 +192,7 @@ backup_file() {
 # ===============================================================================
 
 detect_ubuntu_version() {
-    log "INFO" "Ubuntu sürümü tespit ediliyor..."
+    log "INFO" "Detecting Ubuntu version..."
     
     if [[ ! -f /etc/os-release ]]; then
         error_exit "/etc/os-release dosyası bulunamadı. Ubuntu sistemi doğrulanamıyor."
@@ -187,7 +201,7 @@ detect_ubuntu_version() {
     # shellcheck disable=SC1091
     source /etc/os-release
     
-    # Gerekli değişkenlerin tanımlı olduğunu kontrol et
+    # Check that required variables are defined
     if [[ -z "${ID:-}" ]]; then
         error_exit "ID değişkeni /etc/os-release dosyasında bulunamadı"
     fi
@@ -201,7 +215,7 @@ detect_ubuntu_version() {
     fi
     
     if [[ "$ID" != "ubuntu" ]]; then
-        error_exit "Bu script sadece Ubuntu sistemler için tasarlanmıştır. Tespit edilen: $ID"
+        error_exit "This script is designed for Ubuntu systems only. Detected: $ID"
     fi
     
     UBUNTU_VERSION="$VERSION_ID"
@@ -210,7 +224,7 @@ detect_ubuntu_version() {
     # Sürüm numarasını parçala
     IFS='.' read -r VERSION_MAJOR VERSION_MINOR <<< "$UBUNTU_VERSION"
     
-    # Version değerlerini kontrol et
+    # Check version values
     if [[ -z "$VERSION_MAJOR" ]] || [[ ! "$VERSION_MAJOR" =~ ^[0-9]+$ ]]; then
         error_exit "VERSION_MAJOR değeri geçersiz: '$VERSION_MAJOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
     fi
@@ -219,19 +233,19 @@ detect_ubuntu_version() {
         error_exit "VERSION_MINOR değeri geçersiz: '$VERSION_MINOR' (UBUNTU_VERSION: $UBUNTU_VERSION)"
     fi
     
-    # Ubuntu 16.04+ kontrolü
+    # Ubuntu 16.04+ check
     if [[ $VERSION_MAJOR -lt 16 ]] || [[ $VERSION_MAJOR -eq 16 && $VERSION_MINOR -lt 4 ]]; then
         error_exit "Bu script Ubuntu 16.04+ sürümlerini destekler. Mevcut sürüm: $UBUNTU_VERSION"
     fi
     
-    success "Ubuntu $UBUNTU_VERSION ($UBUNTU_CODENAME) tespit edildi ve destekleniyor"
+    success "Ubuntu $UBUNTU_VERSION ($UBUNTU_CODENAME) detected and supported"
     
     # Sürüme göre audisp metodunu belirle
     determine_audisp_method
 }
 
 determine_audisp_method() {
-    log "INFO" "Ubuntu sürümüne göre audisp metodu belirleniyor..."
+    log "INFO" "Determining audisp method based on Ubuntu version..."
     
     # Ubuntu 16.04-19.10: /etc/audisp/plugins.d/
     # Ubuntu 20.04+: /etc/audit/plugins.d/
@@ -245,7 +259,7 @@ determine_audisp_method() {
         log "INFO" "Modern audit metodu kullanılacak (/etc/audit/plugins.d/)"
     fi
     
-    # Dizinleri kontrol et ve oluştur
+    # Check and create directories
     if [[ "$AUDISP_METHOD" == "legacy" ]]; then
         mkdir -p "$AUDISP_PLUGINS_DIR"
     else
@@ -258,9 +272,9 @@ determine_audisp_method() {
 # ===============================================================================
 
 install_required_packages() {
-    log "INFO" "Gerekli paketler kontrol ediliyor ve kuruluyor..."
+    log "INFO" "Checking and installing required packages..."
     
-    # Ubuntu sürümüne göre paket listesi
+    # Package list based on Ubuntu version
     local required_packages=("auditd" "rsyslog" "python3")
     
     # Ubuntu 16.04-19.10 için audispd-plugins
@@ -270,26 +284,26 @@ install_required_packages() {
     
     local packages_to_install=()
     
-    # Paket listesini güncelle
-    retry_operation "Paket listesi güncelleme" apt-get update
+    # Update package list
+    retry_operation "Package list update" execute_with_privilege apt-get update
     
-    # Hangi paketlerin kurulu olmadığını kontrol et
+    # Check which packages are not installed
     for package in "${required_packages[@]}"; do
         if ! dpkg -l | grep -q "^ii.*$package "; then
             packages_to_install+=("$package")
-            log "INFO" "$package paketi kurulu değil"
+            log "INFO" "$package package is not installed"
         else
-            log "INFO" "$package paketi zaten kurulu"
+            log "INFO" "$package package is already installed"
         fi
     done
     
-    # Eksik paketleri kur
+    # Install missing packages
     if [[ ${#packages_to_install[@]} -gt 0 ]]; then
-        log "INFO" "Kurulacak paketler: ${packages_to_install[*]}"
-        retry_operation "Paket kurulumu" apt-get install -y "${packages_to_install[@]}"
-        success "Paketler başarıyla kuruldu: ${packages_to_install[*]}"
+        log "INFO" "Packages to be installed: ${packages_to_install[*]}"
+        retry_operation "Package installation" execute_with_privilege apt-get install -y "${packages_to_install[@]}"
+        success "Packages installed successfully: ${packages_to_install[*]}"
     else
-        success "Tüm gerekli paketler zaten kurulu"
+        success "All required packages are already installed"
     fi
     
     # Kritik binary'leri doğrula
@@ -308,7 +322,7 @@ install_required_packages() {
 # ===============================================================================
 
 deploy_execve_parser() {
-    log "INFO" "EXECVE komut ayrıştırıcısı deploy ediliyor..."
+    log "INFO" "Deploying EXECVE command parser..."
     
     backup_file "$CONCAT_SCRIPT_PATH"
     
@@ -507,7 +521,7 @@ EXECVE_PARSER_EOF
     
     # Test et
     if python3 "$CONCAT_SCRIPT_PATH" --test >> "$LOG_FILE" 2>&1; then
-        success "EXECVE komut ayrıştırıcısı başarıyla deploy edildi ve test edildi"
+        success "EXECVE command parser deployed and tested successfully"
     else
         warn "EXECVE parser test başarısız oldu, ancak script deploy edildi"
     fi
@@ -990,7 +1004,7 @@ FULL_AUDIT_RULES_EOF
 # ===============================================================================
 
 configure_auditd_daemon() {
-    log "INFO" "Auditd daemon yapılandırması kontrol ediliyor..."
+    log "INFO" "Checking auditd daemon configuration..."
     
     local auditd_conf="/etc/audit/auditd.conf"
     backup_file "$auditd_conf"
@@ -1034,7 +1048,7 @@ AUDITD_CONF_EOF
 # ===============================================================================
 
 configure_audisp() {
-    log "INFO" "Ubuntu sürümüne göre audisp yapılandırılıyor..."
+    log "INFO" "Configuring audisp based on Ubuntu version..."
     
     backup_file "$AUDISP_SYSLOG_CONF"
     
@@ -1443,7 +1457,7 @@ restart_services() {
         return
     fi
 
-    log "INFO" "Servisler yeniden başlatılıyor..."
+    log "INFO" "Restarting services..."
     
     # Servisleri enable et
     safe_execute "auditd servisini enable etme" systemctl enable auditd
@@ -1520,7 +1534,7 @@ run_validation_tests() {
         return
     fi
 
-    # Servis durumu kontrolü
+    # Service status check
     local services=("auditd" "rsyslog")
     for service in "${services[@]}"; do
         if detect_init && systemctl is-active --quiet "$service"; then
@@ -1531,7 +1545,7 @@ run_validation_tests() {
         fi
     done
     
-    # Rsyslog yapılandırma sözdizimi kontrolü
+    # Rsyslog configuration syntax check
     if rsyslogd -N1 >> "$LOG_FILE" 2>&1; then
         success "Rsyslog yapılandırması geçerli"
     else
@@ -1565,7 +1579,7 @@ test_message="QRadar Ubuntu Universal Installer test $(date '+%Y%m%d%H%M%S')"
 }
 
 test_qradar_connectivity() {
-    log "INFO" "QRadar bağlantısı test ediliyor..."
+    log "INFO" "Testing QRadar connection..."
     
     if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$QRADAR_IP/$QRADAR_PORT" 2>/dev/null; then
         success "QRadar bağlantısı ($QRADAR_IP:$QRADAR_PORT) başarılı"
@@ -1581,13 +1595,13 @@ test_qradar_connectivity() {
 }
 
 test_audit_functionality() {
-    log "INFO" "Audit fonksiyonalitesi test ediliyor..."
+    log "INFO" "Testing audit functionality..."
     
     # Güvenli audit olayı tetikle
     cat /etc/passwd > /dev/null 2>&1 || true
     sleep 2
     
-    # Audit olayını kontrol et
+    # Check audit event
     if command_exists ausearch; then
         if ausearch --start today -k T1087_Account_Discovery 2>/dev/null | grep -q "type=SYSCALL"; then
             success "Audit logging çalışıyor"
@@ -1604,17 +1618,17 @@ test_audit_functionality() {
 # ===============================================================================
 
 generate_setup_summary() {
-    log "INFO" "Kurulum özeti oluşturuluyor..."
+    log "INFO" "Generating installation summary..."
     
     echo ""
     echo "============================================================="
-    echo "           QRadar Universal Ubuntu Kurulum Özeti"
+    echo "           QRadar Universal Ubuntu Installation Summary"
     echo "============================================================="
     echo ""
     echo "🖥️  SİSTEM BİLGİLERİ:"
-    echo "   • Ubuntu Sürümü: $UBUNTU_VERSION ($UBUNTU_CODENAME)"
+    echo "   • Ubuntu Version: $UBUNTU_VERSION ($UBUNTU_CODENAME)"
     echo "   • Audisp Metodu: $AUDISP_METHOD"
-    echo "   • QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
+    echo "   • QRadar Target: $QRADAR_IP:$QRADAR_PORT"
     if [[ "$USE_MINIMAL_RULES" == true ]]; then
         echo "   • Kural Seti: Minimal (düşük EPS)"
     else
@@ -1626,7 +1640,7 @@ generate_setup_summary() {
     echo "   • Audisp Yapılandırması: $AUDISP_SYSLOG_CONF"
     echo "   • Rsyslog Yapılandırması: $RSYSLOG_QRADAR_CONF"
     echo "   • EXECVE Parser: $CONCAT_SCRIPT_PATH"
-    echo "   • Kurulum Logu: $LOG_FILE"
+    echo "   • Installation Log: $LOG_FILE"
     echo "   • Yedek Dosyalar: $BACKUP_DIR/"
     echo ""
     echo "🔧 SERVİS DURUMU:"
@@ -1640,7 +1654,7 @@ generate_setup_summary() {
     echo ""
     echo "🎯 ÖZELLİKLER:"
     echo "   • MITRE ATT&CK uyumlu audit kuralları"
-    echo "   • Otomatik EXECVE komut birleştirme"
+    echo "   • Automatic EXECVE command concatenation"
     echo "   • Ubuntu sürüm uyumlu yapılandırma"
     echo "   • Güvenlik odaklı log filtreleme"
     echo "   • Otomatik fallback mekanizmaları"
@@ -1652,7 +1666,7 @@ generate_setup_summary() {
     echo "   • Sadece güvenlik ile ilgili loglar iletiliyor"
     echo "   • Yapılandırma dosyaları $BACKUP_DIR dizininde yedeklendi"
     echo ""
-    echo "🔍 TEST KOMUTLARI:"
+    echo "🔍 TEST COMMANDS:"
     echo "   • Manual test: logger -p local3.info 'Test mesajı'"
     echo "   • Audit test: sudo touch /etc/passwd"
     echo "   • Bağlantı test: telnet $QRADAR_IP $QRADAR_PORT"
@@ -1661,7 +1675,7 @@ generate_setup_summary() {
     echo "============================================================="
     echo ""
     
-    success "QRadar Universal Ubuntu kurulumu başarıyla tamamlandı!"
+    success "QRadar Universal Ubuntu installation completed successfully!"
 }
 
 # ===============================================================================
@@ -1675,8 +1689,8 @@ main() {
     
     log "INFO" "============================================================="
     log "INFO" "QRadar Universal Ubuntu Log Forwarding Installer v$SCRIPT_VERSION"
-    log "INFO" "Başlatılıyor: $(date)"
-    log "INFO" "QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
+    log "INFO" "Starting: $(date)"
+    log "INFO" "QRadar Target: $QRADAR_IP:$QRADAR_PORT"
     log "INFO" "============================================================="
     
     # Root kontrolü
@@ -1697,7 +1711,7 @@ main() {
     generate_setup_summary
     
     log "INFO" "============================================================="
-    log "INFO" "Kurulum tamamlandı: $(date)"
+    log "INFO" "Installation completed: $(date)"
     log "INFO" "============================================================="
 }
 
@@ -1754,12 +1768,12 @@ if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
     exit 1
 fi
 
-# IP adresi format kontrolü
+# IP address format check
 if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
 fi
 
-# Port numarası kontrolü
+# Port number check
 if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
     error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
 fi

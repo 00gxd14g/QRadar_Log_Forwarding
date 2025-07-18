@@ -1,0 +1,73 @@
+FROM alpine:3.18
+
+# Install rsyslog
+RUN apk add --no-cache rsyslog bash coreutils
+
+# Create rsyslog configuration for receiving logs
+RUN mkdir -p /var/log/qradar
+
+# Configure rsyslog to accept remote logs
+COPY <<EOF /etc/rsyslog.conf
+# Basic configuration
+\$ModLoad imuxsock
+\$ModLoad imklog
+\$ModLoad imudp
+\$UDPServerRun 514
+\$UDPServerAddress 0.0.0.0
+
+# Templates for different log formats
+\$template QRadarFormat,"%timestamp:::date-rfc3339% %hostname% %syslogtag% %msg%\n"
+\$template QRadarFile,"/var/log/qradar/qradar-received.log"
+
+# Log all received messages to QRadar file
+*.* ?QRadarFile;QRadarFormat
+
+# Also log to stdout for monitoring
+*.* /dev/stdout;QRadarFormat
+
+# Stop processing after logging
+& stop
+EOF
+
+# Create log directory
+RUN mkdir -p /var/log/qradar && \
+    touch /var/log/qradar/qradar-received.log && \
+    chmod 644 /var/log/qradar/qradar-received.log
+
+# Create startup script
+COPY <<EOF /start-syslog.sh
+#!/bin/bash
+set -e
+
+echo "Starting QRadar Syslog Test Server..."
+echo "Listening on UDP port 514 for incoming logs"
+echo "Logs will be saved to /var/log/qradar/qradar-received.log"
+
+# Start rsyslog in foreground
+exec rsyslogd -n -f /etc/rsyslog.conf
+EOF
+
+RUN chmod +x /start-syslog.sh
+
+# Expose syslog port
+EXPOSE 514/udp
+
+# Create health check script
+COPY <<EOF /health-check.sh
+#!/bin/bash
+# Check if rsyslog is running
+if pgrep rsyslogd > /dev/null; then
+    echo "Syslog server is running"
+    exit 0
+else
+    echo "Syslog server is not running"
+    exit 1
+fi
+EOF
+
+RUN chmod +x /health-check.sh
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD /health-check.sh
+
+CMD ["/start-syslog.sh"]

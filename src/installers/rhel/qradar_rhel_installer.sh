@@ -121,6 +121,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Check if we need sudo
+need_sudo() {
+    [[ $EUID -ne 0 ]] && command_exists sudo
+}
+
+# Execute command with or without sudo
+execute_with_privilege() {
+    if need_sudo; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
 # Secure command execution (no eval)
 safe_execute() {
     local description="$1"
@@ -346,13 +360,13 @@ install_required_packages() {
         # EPEL repository might be needed (especially for RHEL 7)
         if [[ $VERSION_MAJOR -eq 7 ]] && ! rpm -q epel-release >/dev/null 2>&1; then
             log "INFO" "Installing EPEL repository..."
-            safe_execute "EPEL repository installation" "$PACKAGE_MANAGER" install -y epel-release || warn "EPEL installation failed"
+            safe_execute "EPEL repository installation" execute_with_privilege "$PACKAGE_MANAGER" install -y epel-release || warn "EPEL installation failed"
         fi
         
         if [[ "$DISTRO_ID" == "ubuntu" ]]; then
-            retry_operation "Package installation" sudo "$PACKAGE_MANAGER" update
+            retry_operation "Package installation" execute_with_privilege "$PACKAGE_MANAGER" update
         fi
-        retry_operation "Package installation" sudo "$PACKAGE_MANAGER" install -y "${packages_to_install[@]}"
+        retry_operation "Package installation" execute_with_privilege "$PACKAGE_MANAGER" install -y "${packages_to_install[@]}"
         success "Packages installed successfully: ${packages_to_install[*]}"
     else
         success "All required packages are already installed"

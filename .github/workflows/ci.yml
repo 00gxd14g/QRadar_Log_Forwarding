@@ -127,6 +127,22 @@ jobs:
           cd tests/docker
           ./run_tests.sh
 
+  syslog-integration-test:
+    runs-on: ubuntu-latest
+    name: Syslog Integration Test
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Make syslog test runner executable
+        run: chmod +x tests/docker/test_with_syslog.sh
+        
+      - name: Run syslog integration test
+        run: |
+          cd tests/docker
+          ./test_with_syslog.sh
+
   python-test:
     runs-on: ubuntu-latest
     name: Test Python Scripts
@@ -202,7 +218,7 @@ jobs:
   release-preparation:
     runs-on: ubuntu-latest
     name: Prepare Release Artifacts
-    needs: [docker-test-ubuntu, docker-test-debian, docker-test-rhel, docker-test-universal, docker-test-runner, python-test, configuration-validation]
+    needs: [docker-test-ubuntu, docker-test-debian, docker-test-rhel, docker-test-universal, docker-test-runner, syslog-integration-test, python-test, configuration-validation]
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository

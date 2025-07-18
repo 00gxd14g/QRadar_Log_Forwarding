@@ -116,6 +116,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Check if we need sudo
+need_sudo() {
+    [[ $EUID -ne 0 ]] && command_exists sudo
+}
+
+# Execute command with or without sudo
+execute_with_privilege() {
+    if need_sudo; then
+        sudo "$@"
+    else
+        "$@"
+    fi
+}
+
 # Güvenli komut çalıştırma (eval kullanmaz)
 safe_execute() {
     local description="$1"
