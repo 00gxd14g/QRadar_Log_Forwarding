@@ -574,10 +574,14 @@ configure_auditd_daemon() {
     local auditd_conf="/etc/audit/auditd.conf"
     backup_file "$auditd_conf"
     
-    # Create auditd.conf with proper space configuration
+    # Create auditd.conf with corrected configuration
     cat > "$auditd_conf" << 'AUDITD_CONF_EOF'
 # auditd.conf - QRadar Debian/Kali configuration
+# Configuration file for auditd daemon
+log_file = /var/log/audit/audit.log
 log_format = ENRICHED
+log_group = adm
+priority_boost = 4
 flush = INCREMENTAL
 freq = 50
 max_log_file = 30
@@ -599,9 +603,6 @@ distribute_network = no
 q_depth = 2000
 overflow_action = SYSLOG
 max_log_file_action = ROTATE
-log_file = /var/log/audit/audit.log
-log_group = adm
-log_format = ENRICHED
 AUDITD_CONF_EOF
     
     chmod 640 "$auditd_conf"
@@ -660,6 +661,7 @@ configure_rsyslog() {
     backup_file "$RSYSLOG_QRADAR_CONF"
     
     # Create QRadar configuration directly in script
+    # shellcheck disable=SC2154
     cat > "$RSYSLOG_QRADAR_CONF" << 'EOF'
 # QRadar Minimal Log Forwarding Configuration v4.2.1
 # This file is placed in /etc/rsyslog.d/

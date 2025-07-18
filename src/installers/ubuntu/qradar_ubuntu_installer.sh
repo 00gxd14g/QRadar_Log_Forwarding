@@ -1011,10 +1011,14 @@ configure_auditd_daemon() {
     local auditd_conf="/etc/audit/auditd.conf"
     backup_file "$auditd_conf"
     
-    # Auditd.conf dosyasını oluştur veya güncelle
+    # Create auditd.conf with corrected configuration
     cat > "$auditd_conf" << 'AUDITD_CONF_EOF'
 # auditd.conf - QRadar Ubuntu configuration
+# Configuration file for auditd daemon
+log_file = /var/log/audit/audit.log
 log_format = ENRICHED
+log_group = adm
+priority_boost = 4
 flush = INCREMENTAL
 freq = 50
 max_log_file = 30
@@ -1036,9 +1040,6 @@ distribute_network = no
 q_depth = 2000
 overflow_action = SYSLOG
 max_log_file_action = ROTATE
-log_file = /var/log/audit/audit.log
-log_group = adm
-log_format = ENRICHED
 AUDITD_CONF_EOF
     
     chmod 640 "$auditd_conf"
@@ -1088,6 +1089,7 @@ configure_rsyslog() {
     backup_file "$RSYSLOG_QRADAR_CONF"
 
     # Create simple 99-qradar.conf 
+    # shellcheck disable=SC2154
     cat > "$RSYSLOG_QRADAR_CONF" << EOF
 # QRadar Minimal Log Forwarding Configuration v4.2.1
 # This file is placed in /etc/rsyslog.d/
@@ -1097,38 +1099,38 @@ module(load="omfwd")
 module(load="omprogram")
 
 # EXCLUDE unwanted logs (cron, daemon, kernel, systemd, etc.)
-if (\$programname == 'cron' or \$programname == 'CRON' or 
-    \$programname == 'systemd' or \$programname startswith 'systemd-' or
-    \$programname == 'dbus' or \$programname == 'dbus-daemon' or
-    \$programname == 'NetworkManager' or \$programname == 'snapd' or
-    \$programname == 'polkitd' or \$programname == 'packagekitd' or
-    \$programname == 'avahi-daemon' or \$programname == 'cups' or
-    \$programname == 'gdm' or \$programname == 'gnome-shell' or
-    \$programname == 'ModemManager' or \$programname == 'wpa_supplicant' or
-    \$programname == 'ntpd' or \$programname == 'chronyd' or
-    \$programname == 'upstart' or \$programname == 'init' or
-    \$programname == 'kernel' or \$programname startswith 'kernel:' or
-    \$programname == 'dhclient' or \$programname == 'dhcpcd' or
-    \$programname == 'postfix' or \$programname == 'sendmail' or
-    \$programname == 'named' or \$programname == 'bind' or
-    \$programname == 'apache2' or \$programname == 'nginx' or
-    \$programname == 'mysqld' or \$programname == 'postgres' or
-    \$syslogfacility-text == 'daemon' or \$syslogfacility-text == 'kern' or
-    \$syslogfacility-text == 'cron' or \$syslogfacility-text == 'lpr' or
-    \$syslogfacility-text == 'news' or \$syslogfacility-text == 'uucp' or
-    \$syslogfacility-text == 'mail' or \$syslogfacility-text == 'ftp') then {
+if ($programname == 'cron' or $programname == 'CRON' or 
+    $programname == 'systemd' or $programname startswith 'systemd-' or
+    $programname == 'dbus' or $programname == 'dbus-daemon' or
+    $programname == 'NetworkManager' or $programname == 'snapd' or
+    $programname == 'polkitd' or $programname == 'packagekitd' or
+    $programname == 'avahi-daemon' or $programname == 'cups' or
+    $programname == 'gdm' or $programname == 'gnome-shell' or
+    $programname == 'ModemManager' or $programname == 'wpa_supplicant' or
+    $programname == 'ntpd' or $programname == 'chronyd' or
+    $programname == 'upstart' or $programname == 'init' or
+    $programname == 'kernel' or $programname startswith 'kernel:' or
+    $programname == 'dhclient' or $programname == 'dhcpcd' or
+    $programname == 'postfix' or $programname == 'sendmail' or
+    $programname == 'named' or $programname == 'bind' or
+    $programname == 'apache2' or $programname == 'nginx' or
+    $programname == 'mysqld' or $programname == 'postgres' or
+    $syslogfacility-text == 'daemon' or $syslogfacility-text == 'kern' or
+    $syslogfacility-text == 'cron' or $syslogfacility-text == 'lpr' or
+    $syslogfacility-text == 'news' or $syslogfacility-text == 'uucp' or
+    $syslogfacility-text == 'mail' or $syslogfacility-text == 'ftp') then {
     stop
 }
 
 # Input for audit logs from auditd - SECURITY LOGS ONLY
-if (\$programname == 'audit' or \$syslogfacility-text == 'local3' or 
-    \$syslogfacility-text == 'authpriv' or \$syslogfacility-text == 'auth' or
-    \$programname == 'sshd' or \$programname == 'sudo' or \$programname == 'su' or
-    \$programname == 'login' or \$programname == 'passwd' or 
-    \$programname == 'useradd' or \$programname == 'userdel' or \$programname == 'usermod') then {
+if ($programname == 'audit' or $syslogfacility-text == 'local3' or 
+    $syslogfacility-text == 'authpriv' or $syslogfacility-text == 'auth' or
+    $programname == 'sshd' or $programname == 'sudo' or $programname == 'su' or
+    $programname == 'login' or $programname == 'passwd' or 
+    $programname == 'useradd' or $programname == 'userdel' or $programname == 'usermod') then {
     
     # Create a copy for EXECVE processing if needed
-    if (\$msg contains 'type=EXECVE') then {
+    if ($msg contains 'type=EXECVE') then {
         action(type="omprogram"
                binary="$CONCAT_SCRIPT_PATH")
     }
