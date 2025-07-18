@@ -1028,7 +1028,7 @@ configure_rsyslog() {
     backup_file "$RSYSLOG_QRADAR_CONF"
 
     # Create 99-qradar.conf directly
-    cat > "$RSYSLOG_QRADAR_CONF" << EOF
+    cat > "$RSYSLOG_QRADAR_CONF" << 'EOF'
 # QRadar Log Forwarding Configuration v4.2.1
 # Ubuntu Universal Edition
 

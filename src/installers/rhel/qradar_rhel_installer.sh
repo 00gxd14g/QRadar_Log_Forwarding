@@ -532,25 +532,95 @@ configure_rsyslog() {
 
     backup_file "$RSYSLOG_QRADAR_CONF"
 
-    cp "${RESOURCE_DIR}/99-qradar.conf" "$RSYSLOG_QRADAR_CONF"
+    # Create QRadar configuration directly in script
+    cat > "$RSYSLOG_QRADAR_CONF" << 'EOF'
+# QRadar Minimal Log Forwarding Configuration v4.2.1
+# This file is placed in /etc/rsyslog.d/
+
+# EXCLUDE unwanted logs (cron, daemon, kernel, systemd, etc.)
+if ($programname == 'cron' or $programname == 'CRON' or 
+    $programname == 'systemd' or $programname startswith 'systemd-' or
+    $programname == 'dbus' or $programname == 'dbus-daemon' or
+    $programname == 'NetworkManager' or $programname == 'snapd' or
+    $programname == 'polkitd' or $programname == 'packagekitd' or
+    $programname == 'avahi-daemon' or $programname == 'cups' or
+    $programname == 'gdm' or $programname == 'gnome-shell' or
+    $programname == 'ModemManager' or $programname == 'wpa_supplicant' or
+    $syslogfacility-text == 'daemon' or $syslogfacility-text == 'kern' or
+    $syslogfacility-text == 'cron' or $syslogfacility-text == 'lpr' or
+    $syslogfacility-text == 'news' or $syslogfacility-text == 'uucp') then {
+    stop
+}
+
+# Input for audit logs from auditd - SECURITY LOGS ONLY
+if ($programname == 'audit' or $syslogfacility-text == 'local3' or 
+    $syslogfacility-text == 'authpriv' or $syslogfacility-text == 'auth' or
+    $programname == 'sshd' or $programname == 'sudo' or $programname == 'su' or
+    $programname == 'login' or $programname == 'passwd' or 
+    $programname == 'useradd' or $programname == 'userdel' or $programname == 'usermod') then {
     
-    # shellcheck source=../universal/99-qradar.conf
+    # Create a copy for EXECVE processing if needed
+    if ($msg contains 'type=EXECVE') then {
+        action(type="omprogram"
+               binary="/usr/local/bin/qradar_execve_parser.py")
+    }
+    
+    # Forward to QRadar with LEEF format
+    action(type="omfwd"
+           Target="<QRADAR_IP>"
+           Port="<QRADAR_PORT>"
+           Protocol="tcp"
+           queue.type="linkedList"
+           queue.filename="qradar_audit_fwd"
+           action.resumeRetryCount="-1")
+    stop
+}
+EOF
+
+    # Replace placeholders
     sed -i -e "s/<QRADAR_IP>/$QRADAR_IP/g" \
         -e "s/<QRADAR_PORT>/$QRADAR_PORT/g" \
         "$RSYSLOG_QRADAR_CONF"
 
     chmod 644 "$RSYSLOG_QRADAR_CONF"
 
-    # Copy rsyslog.conf
+    # Create minimal rsyslog.conf directly in script
     backup_file "/etc/rsyslog.conf"
-    cp "${RESOURCE_DIR}/rsyslog.conf" "/etc/rsyslog.conf"
-    chmod 644 "/etc/rsyslog.conf"
+    cat > "/etc/rsyslog.conf" << 'EOF'
+# QRadar Minimal Rsyslog Configuration
+# Version: 4.0.0
+# Only essential security logs are forwarded to QRadar
 
-    # Copy ignore_programs.json
-    mkdir -p "/etc/rsyslog.d"
-    backup_file "/etc/rsyslog.d/ignore_programs.json"
-    cp "${RESOURCE_DIR}/ignore_programs.json" "/etc/rsyslog.d/ignore_programs.json"
-    chmod 644 "/etc/rsyslog.d/ignore_programs.json"
+# Working directory
+$WorkDirectory /var/spool/rsyslog
+
+# Use default timestamp format
+$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+
+# Set the default permissions
+$FileOwner syslog
+$FileGroup adm
+$FileCreateMode 0640
+$DirCreateMode 0755
+$Umask 0022
+
+# Include all config files in /etc/rsyslog.d/
+$IncludeConfig /etc/rsyslog.d/*.conf
+
+# Minimal essential system logs only
+kern.warning                    /var/log/kern.log
+auth,authpriv.*                 /var/log/auth.log
+*.*;auth,authpriv.none          -/var/log/syslog
+
+# Emergency messages to all users
+*.emerg                         :omusrmsg:*
+
+# Don't log private authentication messages
+auth,authpriv.none              -/var/log/syslog
+
+# QRadar specific logging rules are in /etc/rsyslog.d/99-qradar.conf
+EOF
+    chmod 644 "/etc/rsyslog.conf"
 
     success "Rsyslog Universal configuration for RHEL family complete"
 }
