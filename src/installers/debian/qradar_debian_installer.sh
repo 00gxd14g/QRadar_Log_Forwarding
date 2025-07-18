@@ -673,9 +673,18 @@ if ($programname == 'cron' or $programname == 'CRON' or
     $programname == 'avahi-daemon' or $programname == 'cups' or
     $programname == 'gdm' or $programname == 'gnome-shell' or
     $programname == 'ModemManager' or $programname == 'wpa_supplicant' or
+    $programname == 'ntpd' or $programname == 'chronyd' or
+    $programname == 'upstart' or $programname == 'init' or
+    $programname == 'kernel' or $programname startswith 'kernel:' or
+    $programname == 'dhclient' or $programname == 'dhcpcd' or
+    $programname == 'postfix' or $programname == 'sendmail' or
+    $programname == 'named' or $programname == 'bind' or
+    $programname == 'apache2' or $programname == 'nginx' or
+    $programname == 'mysqld' or $programname == 'postgres' or
     $syslogfacility-text == 'daemon' or $syslogfacility-text == 'kern' or
     $syslogfacility-text == 'cron' or $syslogfacility-text == 'lpr' or
-    $syslogfacility-text == 'news' or $syslogfacility-text == 'uucp') then {
+    $syslogfacility-text == 'news' or $syslogfacility-text == 'uucp' or
+    $syslogfacility-text == 'mail' or $syslogfacility-text == 'ftp') then {
     stop
 }
 

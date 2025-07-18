@@ -160,6 +160,24 @@ run_installer_test() {
             echo "Sample received logs:"
             docker exec "$SYSLOG_CONTAINER" tail -5 /var/log/qradar/qradar-received.log | sed 's/^/  /'
             
+            # Test log filtering - check that unwanted logs are NOT present
+            echo "Testing log filtering..."
+            local unwanted_count=0
+            local unwanted_programs=("cron" "systemd" "dbus" "NetworkManager" "snapd" "kernel")
+            
+            for program in "${unwanted_programs[@]}"; do
+                if docker exec "$SYSLOG_CONTAINER" grep -q "$program" /var/log/qradar/qradar-received.log 2>/dev/null; then
+                    echo -e "${YELLOW}⚠ Found unwanted $program logs${NC}"
+                    unwanted_count=$((unwanted_count + 1))
+                fi
+            done
+            
+            if [ "$unwanted_count" -eq 0 ]; then
+                echo -e "${GREEN}✓ Log filtering working correctly - no unwanted logs found${NC}"
+            else
+                echo -e "${YELLOW}⚠ Found $unwanted_count types of unwanted logs${NC}"
+            fi
+            
             # Clean up container
             docker rm "$container_name" 2>/dev/null || true
             return 0
