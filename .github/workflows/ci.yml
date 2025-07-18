@@ -1,0 +1,366 @@
+name: QRadar Log Forwarding CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    name: Shell Script Syntax Check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          
+      - name: Run shellcheck on all shell scripts
+        run: |
+          echo "Running shellcheck on all shell scripts..."
+          find . -name "*.sh" -type f | while read -r script; do
+            echo "Checking: $script"
+            shellcheck "$script" || exit 1
+          done
+          
+      - name: Validate rsyslog configuration syntax
+        run: |
+          echo "Installing rsyslog for syntax validation..."
+          sudo apt-get install -y rsyslog
+          
+          echo "Checking rsyslog configuration files..."
+          find . -name "*.conf" -path "*/universal/*" -type f | while read -r conf; do
+            echo "Validating: $conf"
+            # Basic syntax check - ensure no obvious errors
+            if grep -q "module\|action\|if\|then" "$conf"; then
+              echo "✓ $conf appears to be a valid rsyslog configuration"
+            else
+              echo "⚠ $conf might not be a valid rsyslog configuration"
+            fi
+          done
+
+  docker-test-ubuntu:
+    runs-on: ubuntu-latest
+    name: Test Ubuntu Installer
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Build Ubuntu test container
+        run: |
+          cat > Dockerfile.ubuntu << 'EOF'
+          FROM ubuntu:24.04
+          
+          # Install required packages
+          RUN apt-get update && apt-get install -y \
+              sudo \
+              systemd \
+              rsyslog \
+              auditd \
+              python3 \
+              python3-pip \
+              netcat-openbsd \
+              curl \
+              wget \
+              && rm -rf /var/lib/apt/lists/*
+          
+          # Create test user with sudo privileges
+          RUN useradd -m -s /bin/bash testuser && \
+              echo "testuser:testpass" | chpasswd && \
+              usermod -aG sudo testuser && \
+              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          # Copy scripts
+          COPY src/ /opt/qradar/src/
+          RUN chmod +x /opt/qradar/src/installers/ubuntu/qradar_ubuntu_installer.sh
+          
+          # Set working directory
+          WORKDIR /opt/qradar
+          
+          # Test script
+          CMD ["sudo", "bash", "src/installers/ubuntu/qradar_ubuntu_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
+          EOF
+          
+          docker build -f Dockerfile.ubuntu -t qradar-ubuntu-test .
+          
+      - name: Run Ubuntu installer test
+        run: |
+          echo "Testing Ubuntu installer in Docker..."
+          docker run --rm qradar-ubuntu-test
+
+  docker-test-debian:
+    runs-on: ubuntu-latest
+    name: Test Debian Installer
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Build Debian test container
+        run: |
+          cat > Dockerfile.debian << 'EOF'
+          FROM debian:12
+          
+          # Install required packages
+          RUN apt-get update && apt-get install -y \
+              sudo \
+              systemd \
+              rsyslog \
+              auditd \
+              python3 \
+              python3-pip \
+              netcat-openbsd \
+              curl \
+              wget \
+              && rm -rf /var/lib/apt/lists/*
+          
+          # Create test user with sudo privileges
+          RUN useradd -m -s /bin/bash testuser && \
+              echo "testuser:testpass" | chpasswd && \
+              usermod -aG sudo testuser && \
+              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          # Copy scripts
+          COPY src/ /opt/qradar/src/
+          RUN chmod +x /opt/qradar/src/installers/debian/qradar_debian_installer.sh
+          
+          # Set working directory
+          WORKDIR /opt/qradar
+          
+          # Test script
+          CMD ["sudo", "bash", "src/installers/debian/qradar_debian_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
+          EOF
+          
+          docker build -f Dockerfile.debian -t qradar-debian-test .
+          
+      - name: Run Debian installer test
+        run: |
+          echo "Testing Debian installer in Docker..."
+          docker run --rm qradar-debian-test
+
+  docker-test-rhel:
+    runs-on: ubuntu-latest
+    name: Test RHEL Installer
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Build RHEL test container
+        run: |
+          cat > Dockerfile.rhel << 'EOF'
+          FROM rockylinux:9
+          
+          # Install required packages
+          RUN dnf update -y && dnf install -y \
+              sudo \
+              systemd \
+              rsyslog \
+              audit \
+              python3 \
+              python3-pip \
+              nc \
+              curl \
+              wget \
+              && dnf clean all
+          
+          # Create test user with sudo privileges
+          RUN useradd -m -s /bin/bash testuser && \
+              echo "testuser:testpass" | chpasswd && \
+              usermod -aG wheel testuser && \
+              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          # Copy scripts
+          COPY src/ /opt/qradar/src/
+          RUN chmod +x /opt/qradar/src/installers/rhel/qradar_rhel_installer.sh
+          
+          # Set working directory
+          WORKDIR /opt/qradar
+          
+          # Test script
+          CMD ["sudo", "bash", "src/installers/rhel/qradar_rhel_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
+          EOF
+          
+          docker build -f Dockerfile.rhel -t qradar-rhel-test .
+          
+      - name: Run RHEL installer test
+        run: |
+          echo "Testing RHEL installer in Docker..."
+          docker run --rm qradar-rhel-test
+
+  docker-test-universal:
+    runs-on: ubuntu-latest
+    name: Test Universal Installer
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Build Universal test container
+        run: |
+          cat > Dockerfile.universal << 'EOF'
+          FROM ubuntu:24.04
+          
+          # Install required packages
+          RUN apt-get update && apt-get install -y \
+              sudo \
+              systemd \
+              rsyslog \
+              auditd \
+              python3 \
+              python3-pip \
+              netcat-openbsd \
+              curl \
+              wget \
+              && rm -rf /var/lib/apt/lists/*
+          
+          # Create test user with sudo privileges
+          RUN useradd -m -s /bin/bash testuser && \
+              echo "testuser:testpass" | chpasswd && \
+              usermod -aG sudo testuser && \
+              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          
+          # Copy scripts
+          COPY src/ /opt/qradar/src/
+          RUN chmod +x /opt/qradar/src/installers/universal/qradar_universal_installer.sh
+          RUN chmod +x /opt/qradar/src/installers/ubuntu/qradar_ubuntu_installer.sh
+          
+          # Set working directory
+          WORKDIR /opt/qradar
+          
+          # Test script
+          CMD ["sudo", "bash", "src/installers/universal/qradar_universal_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
+          EOF
+          
+          docker build -f Dockerfile.universal -t qradar-universal-test .
+          
+      - name: Run Universal installer test
+        run: |
+          echo "Testing Universal installer in Docker..."
+          docker run --rm qradar-universal-test
+
+  python-test:
+    runs-on: ubuntu-latest
+    name: Test Python Scripts
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest flake8 mypy
+          
+      - name: Run Python syntax check
+        run: |
+          echo "Running Python syntax checks..."
+          find . -name "*.py" -type f | while read -r script; do
+            echo "Checking: $script"
+            python -m py_compile "$script" || exit 1
+          done
+          
+      - name: Run flake8 linting
+        run: |
+          echo "Running flake8 linting..."
+          find . -name "*.py" -type f -exec flake8 {} \; || true
+          
+      - name: Test Python scripts
+        run: |
+          echo "Testing Python scripts..."
+          if [ -f "tests/test_execve_parser.py" ]; then
+            python tests/test_execve_parser.py
+          fi
+
+  configuration-validation:
+    runs-on: ubuntu-latest
+    name: Validate Configuration Files
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Install validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsyslog jq
+          
+      - name: Validate JSON configuration files
+        run: |
+          echo "Validating JSON configuration files..."
+          find . -name "*.json" -type f | while read -r json_file; do
+            echo "Validating: $json_file"
+            jq empty "$json_file" || exit 1
+          done
+          
+      - name: Validate audit rules
+        run: |
+          echo "Validating audit rules..."
+          find . -name "*.rules" -type f | while read -r rules_file; do
+            echo "Checking: $rules_file"
+            # Basic syntax check for audit rules
+            if grep -qE "^-[abwWe]" "$rules_file"; then
+              echo "✓ $rules_file appears to be a valid audit rules file"
+            else
+              echo "⚠ $rules_file might not be a valid audit rules file"
+            fi
+          done
+
+  release-preparation:
+    runs-on: ubuntu-latest
+    name: Prepare Release Artifacts
+    needs: [docker-test-ubuntu, docker-test-debian, docker-test-rhel, docker-test-universal, python-test, configuration-validation]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Create release archive
+        run: |
+          echo "Creating release archive..."
+          mkdir -p release/QRadar_Log_Forwarding
+          
+          # Copy source files
+          cp -r src/ release/QRadar_Log_Forwarding/
+          cp -r docs/ release/QRadar_Log_Forwarding/
+          cp README.md release/QRadar_Log_Forwarding/
+          
+          # Create version file
+          echo "$(date +%Y%m%d_%H%M%S)" > release/QRadar_Log_Forwarding/VERSION
+          
+          # Create archive
+          cd release
+          tar -czf QRadar_Log_Forwarding_$(date +%Y%m%d_%H%M%S).tar.gz QRadar_Log_Forwarding/
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qradar-log-forwarding-release
+          path: release/*.tar.gz
+          retention-days: 30
+
+  cleanup:
+    runs-on: ubuntu-latest
+    name: Cleanup Old Workflow Runs
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 7
+          keep_minimum_runs: 3

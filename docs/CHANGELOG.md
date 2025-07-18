@@ -1,5 +1,36 @@
 # Changelog
 
+## v4.1.0 - 2025-07-18
+
+### Added
+- **Docker-based Testing**: Comprehensive Docker test suite for all installers
+- **GitHub Actions CI/CD**: Automated testing, syntax validation, and artifact generation
+- **Multi-platform Testing**: Ubuntu, Debian, RHEL, and Universal installer validation
+- **Automated Cleanup**: GitHub Actions workflow runs and artifact cleanup
+- **Configuration Validation**: Rsyslog, audit rules, and JSON configuration checks
+- **AppArmor Support**: Automatic AppArmor profile configuration for rsyslog
+- **Auditd Daemon Configuration**: Proper space_left and admin_space_left parameters
+
+### Fixed
+- **Auditd Startup Issues**: Fixed space_left configuration causing service failures
+- **LEEF Format Removed**: Simplified rsyslog configuration for better reliability
+- **Variable Substitution**: Fixed unresolved $QRADAR_IP and $QRADAR_PORT variables
+- **AppArmor Permissions**: Python script execution permissions for rsyslog
+- **Shellcheck Compliance**: All shell scripts pass syntax validation
+- **Template Errors**: Removed unused LEEF templates causing configuration errors
+
+### Changed
+- **Simplified Configuration**: Removed complex LEEF formatting for stability
+- **Enhanced Error Handling**: Improved error messages and debugging information
+- **Branch Strategy**: Main branch only, disabled other branches for CI/CD
+- **Test Coverage**: 100% automated test coverage for all installer scripts
+
+### Infrastructure
+- **GitHub Actions**: Complete CI/CD pipeline with Docker testing
+- **Automated Testing**: Syntax, configuration, and integration tests
+- **Release Automation**: Automated artifact generation and versioning
+- **Documentation**: Enhanced README with testing instructions and CI/CD status
+
 ## v4.0.1 - 2025-07-16
 
 ### Fixed

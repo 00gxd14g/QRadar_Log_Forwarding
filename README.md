@@ -4,6 +4,9 @@
 ![Linux](https://img.shields.io/badge/OS-Linux-yellow?style=flat-square)
 ![Bash](https://img.shields.io/badge/Shell-Bash-green?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.6+-red?style=flat-square)
+![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-orange?style=flat-square)
+![Docker](https://img.shields.io/badge/Tests-Docker-blue?style=flat-square)
+![Build Status](https://img.shields.io/github/actions/workflow/status/your-org/QRadar_Log_Forwarding/ci.yml?branch=main&style=flat-square)
 
 An enterprise-grade, production-ready solution for configuring Linux systems to forward audit logs to IBM QRadar SIEM.
 
@@ -77,6 +80,39 @@ sudo ./src/installers/universal/qradar_universal_installer.sh 192.168.1.100 514
 |-----------|-------------|---------|
 | `QRADAR_IP` | IP address of your QRadar server | `192.168.1.100` |
 | `QRADAR_PORT` | Port number for log forwarding | `514` |
+| `--minimal` | Use minimal audit rules for low EPS | Optional |
+| `--dry-run` | Test mode without system modifications | Optional |
 
+## 🧪 Testing
+
+### Automated CI/CD
+This project includes comprehensive automated testing via GitHub Actions:
+
+- **Syntax Validation**: All shell scripts and Python code
+- **Docker Integration Tests**: Multi-platform installer testing
+- **Configuration Validation**: Rsyslog and audit rule verification
+- **Artifact Generation**: Automated release preparation
+
+### Manual Testing
+```bash
+# Run all Docker tests
+cd tests/docker
+./run_tests.sh
+
+# Test specific platform
+docker build -f tests/docker/Dockerfile.ubuntu -t qradar-ubuntu-test .
+docker run --rm qradar-ubuntu-test
+
+# Syntax check
+find . -name "*.sh" -type f | xargs shellcheck
+```
+
+### Test Coverage
+- ✅ Ubuntu 24.04 installer
+- ✅ Debian 12 installer  
+- ✅ RHEL/Rocky Linux 9 installer
+- ✅ Universal installer
+- ✅ Python parser scripts
+- ✅ Configuration file validation
 
 ## 🔧 For more details, see the [documentation](docs/README.md).

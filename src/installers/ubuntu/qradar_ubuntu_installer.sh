@@ -986,6 +986,50 @@ FULL_AUDIT_RULES_EOF
 }
 
 # ===============================================================================
+# AUDITD DAEMON CONFIGURATION
+# ===============================================================================
+
+configure_auditd_daemon() {
+    log "INFO" "Auditd daemon yapılandırması kontrol ediliyor..."
+    
+    local auditd_conf="/etc/audit/auditd.conf"
+    backup_file "$auditd_conf"
+    
+    # Auditd.conf dosyasını oluştur veya güncelle
+    cat > "$auditd_conf" << 'AUDITD_CONF_EOF'
+# auditd.conf - QRadar Ubuntu configuration
+log_format = ENRICHED
+flush = INCREMENTAL
+freq = 50
+max_log_file = 30
+num_logs = 5
+space_left = 75
+admin_space_left = 50
+space_left_action = SYSLOG
+admin_space_left_action = SUSPEND
+disk_full_action = SUSPEND
+disk_error_action = SUSPEND
+use_libwrap = yes
+tcp_listen_queue = 5
+tcp_max_per_addr = 1
+tcp_client_max_idle = 0
+enable_krb5 = no
+krb5_principal = auditd
+krb5_key_file = /etc/audit/audit.key
+distribute_network = no
+q_depth = 2000
+overflow_action = SYSLOG
+max_log_file_action = ROTATE
+log_file = /var/log/audit/audit.log
+log_group = adm
+log_format = ENRICHED
+AUDITD_CONF_EOF
+    
+    chmod 640 "$auditd_conf"
+    success "Auditd daemon yapılandırması tamamlandı"
+}
+
+# ===============================================================================
 # AUDISP CONFIGURATION
 # ===============================================================================
 
@@ -1027,94 +1071,52 @@ configure_rsyslog() {
 
     backup_file "$RSYSLOG_QRADAR_CONF"
 
-    # Create 99-qradar.conf directly
-    cat > "$RSYSLOG_QRADAR_CONF" << 'EOF'
-# QRadar Log Forwarding Configuration v4.2.1
-# Ubuntu Universal Edition
+    # Create simple 99-qradar.conf 
+    cat > "$RSYSLOG_QRADAR_CONF" << EOF
+# QRadar Minimal Log Forwarding Configuration v4.2.1
+# This file is placed in /etc/rsyslog.d/
 
-# Global settings
+# Load required modules
 module(load="omfwd")
-module(load="mmjsonparse")
 module(load="omprogram")
-module(load="imfile")
 
-# Template for QRadar
-template(name="QRadarFormat" type="string" string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\\n")
-
-# Template for QRadar Ubuntu format
-template(name="QRadarUbuntuFormat" type="string" 
-    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% ubuntu-audit: type=\$.audit_type auid=\$.auid uid=\$.uid euid=\$.euid pid=\$.pid exe=\$.exe success=\$.success key=\$.key cmd=\$.full_command %msg%\\n"
-)
-
-# LEEF v2 Template for Ubuntu
-template(name="LEEFv2Ubuntu" type="string" 
-    string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% LEEF:2.0|Linux|Ubuntu|$UBUNTU_VERSION|%app-name%|devTime=%TIMESTAMP:::date-unixtimestamp%|devTimeFormat=epoch|cat=Audit|sev=\$.severity|usrName=\$.uid_name|src=\$.src_ip|dst=\$.dst_ip|proto=\$.protocol|srcPort=\$.src_port|dstPort=\$.dst_port|cmd=\$.full_command|fileName=\$.filename|fileHash=\$.hash|processId=\$.pid|parentProcessId=\$.ppid|identSrc=\$.auid|accountName=\$.acct|reason=\$.reason%msg%\\n"
-)
-
-# Main queue for reliable forwarding
-main_queue(
-    queue.type="linkedList"
-    queue.filename="qradar_main_queue"
-    queue.maxDiskSpace="2g"
-    queue.size="100000"
-    queue.dequeueBatchSize="1000"
-    queue.saveOnShutdown="on"
-    queue.timeoutShutdown="10000"
-)
-
-# Ruleset for processing audit logs
-ruleset(name="qradar_audit") {
-    # Extract audit fields
-    set \$.audit_type = exec_template("/usr/local/bin/extract_audit_type.sh");
-    set \$.audit_result = exec_template("/usr/local/bin/extract_audit_result.sh");
-    
-    # Set severity based on audit result
-    if (\$.audit_result == "failed") then {
-        set \$.severity = "5";
-    } else {
-        set \$.severity = "3";
-    }
-    
-    # EXECVE command reconstruction
-    if (\$msg contains 'type=EXECVE') then {
-        action(
-            type="omprog"
-            binary="$CONCAT_SCRIPT_PATH"
-            template="QRadarFormat"
-        )
-        stop
-    }
-
-    # Forward to QRadar with both formats (LEEF v2 + Traditional)
-    # LEEF v2 format
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="LEEFv2Ubuntu"
-        queue.type="linkedList"
-        queue.size="50000"
-        action.resumeRetryCount="-1"
-    )
-    
-    # Traditional format
-    action(
-        type="omfwd"
-        target="$QRADAR_IP"
-        port="$QRADAR_PORT"
-        protocol="tcp"
-        template="QRadarUbuntuFormat"
-        queue.type="linkedList"
-        queue.size="50000"
-        action.resumeRetryCount="-1"
-    )
+# EXCLUDE unwanted logs (cron, daemon, kernel, systemd, etc.)
+if (\$programname == 'cron' or \$programname == 'CRON' or 
+    \$programname == 'systemd' or \$programname startswith 'systemd-' or
+    \$programname == 'dbus' or \$programname == 'dbus-daemon' or
+    \$programname == 'NetworkManager' or \$programname == 'snapd' or
+    \$programname == 'polkitd' or \$programname == 'packagekitd' or
+    \$programname == 'avahi-daemon' or \$programname == 'cups' or
+    \$programname == 'gdm' or \$programname == 'gnome-shell' or
+    \$programname == 'ModemManager' or \$programname == 'wpa_supplicant' or
+    \$syslogfacility-text == 'daemon' or \$syslogfacility-text == 'kern' or
+    \$syslogfacility-text == 'cron' or \$syslogfacility-text == 'lpr' or
+    \$syslogfacility-text == 'news' or \$syslogfacility-text == 'uucp') then {
     stop
 }
 
-# Input for audit logs
-if (\$syslogfacility-text == 'local3') then {
-    call qradar_audit
+# Input for audit logs from auditd - SECURITY LOGS ONLY
+if (\$programname == 'audit' or \$syslogfacility-text == 'local3' or 
+    \$syslogfacility-text == 'authpriv' or \$syslogfacility-text == 'auth' or
+    \$programname == 'sshd' or \$programname == 'sudo' or \$programname == 'su' or
+    \$programname == 'login' or \$programname == 'passwd' or 
+    \$programname == 'useradd' or \$programname == 'userdel' or \$programname == 'usermod') then {
+    
+    # Create a copy for EXECVE processing if needed
+    if (\$msg contains 'type=EXECVE') then {
+        action(type="omprogram"
+               binary="$CONCAT_SCRIPT_PATH")
+    }
+    
+    # Forward to QRadar with simple format
+    action(type="omfwd"
+           Target="$QRADAR_IP"
+           Port="$QRADAR_PORT"
+           Protocol="tcp"
+           queue.type="linkedList"
+           queue.filename="qradar_audit_fwd"
+           action.resumeRetryCount="-1")
+    stop
 }
 EOF
 
@@ -1264,6 +1266,42 @@ AUDIT_RULEBASE_EOF
     chmod 644 "/etc/rsyslog.d/audit.rulebase"
 
     success "Rsyslog Ubuntu Universal yapılandırması tamamlandı"
+}
+
+# ===============================================================================
+# APPARMOR CONFIGURATION
+# ===============================================================================
+
+configure_apparmor() {
+    log "INFO" "AppArmor rsyslog izinleri yapılandırılıyor..."
+    
+    local apparmor_profile="/etc/apparmor.d/usr.sbin.rsyslogd"
+    
+    if [[ -f "$apparmor_profile" ]]; then
+        backup_file "$apparmor_profile"
+        
+        # Add python execution permissions to rsyslog AppArmor profile
+        if ! grep -q "/usr/bin/python3" "$apparmor_profile"; then
+            sed -i '/^  \/usr\/sbin\/rsyslogd mr,/a\  \/usr\/bin\/python3 ix,' "$apparmor_profile"
+        fi
+        
+        if ! grep -q "/usr/local/bin/qradar_execve_parser.py" "$apparmor_profile"; then
+            sed -i '/^  \/usr\/sbin\/rsyslogd mr,/a\  \/usr\/local\/bin\/qradar_execve_parser.py ix,' "$apparmor_profile"
+        fi
+        
+        if ! grep -q "/usr/local/bin/qradar_mitre_parser.py" "$apparmor_profile"; then
+            sed -i '/^  \/usr\/sbin\/rsyslogd mr,/a\  \/usr\/local\/bin\/qradar_mitre_parser.py ix,' "$apparmor_profile"
+        fi
+        
+        # Reload AppArmor profile
+        if command -v apparmor_parser &> /dev/null; then
+            apparmor_parser -r "$apparmor_profile" 2>/dev/null || warn "AppArmor profile reload failed"
+        fi
+        
+        success "AppArmor rsyslog izinleri yapılandırıldı"
+    else
+        log "INFO" "AppArmor profili bulunamadı, atlanıyor"
+    fi
 }
 
 # ===============================================================================
@@ -1649,8 +1687,10 @@ main() {
     install_required_packages
     deploy_execve_parser
     configure_auditd
+    configure_auditd_daemon
     configure_audisp
     configure_rsyslog
+    configure_apparmor
     configure_direct_audit_fallback
     restart_services
     run_validation_tests

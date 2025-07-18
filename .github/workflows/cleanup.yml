@@ -1,0 +1,42 @@
+name: Cleanup Old Actions
+
+on:
+  schedule:
+    # Run every day at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual triggering
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    name: Delete Old Workflow Runs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 7
+          keep_minimum_runs: 5
+
+  cleanup-artifacts:
+    runs-on: ubuntu-latest
+    name: Delete Old Artifacts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Delete old artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          token: ${{ github.token }}
+          name: |
+            qradar-log-forwarding-release
+          useGlob: true
+          failOnError: false
+          # Keep artifacts for 30 days
+          skipRecent: 30

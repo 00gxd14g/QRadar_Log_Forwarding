@@ -161,7 +161,8 @@ retry_operation() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        local backup_path
+        backup_path="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp --preserve=mode,ownership,timestamps "$file" "$backup_path" \
           || warn "Could not backup $file"
@@ -442,6 +443,50 @@ configure_auditd() {
 }
 
 # ===============================================================================
+# AUDITD DAEMON CONFIGURATION
+# ===============================================================================
+
+configure_auditd_daemon() {
+    log "INFO" "Configuring auditd daemon for RHEL family..."
+    
+    local auditd_conf="/etc/audit/auditd.conf"
+    backup_file "$auditd_conf"
+    
+    # Create auditd.conf with proper space configuration
+    cat > "$auditd_conf" << 'AUDITD_CONF_EOF'
+# auditd.conf - QRadar RHEL configuration
+log_format = ENRICHED
+flush = INCREMENTAL
+freq = 50
+max_log_file = 30
+num_logs = 5
+space_left = 75
+admin_space_left = 50
+space_left_action = SYSLOG
+admin_space_left_action = SUSPEND
+disk_full_action = SUSPEND
+disk_error_action = SUSPEND
+use_libwrap = yes
+tcp_listen_queue = 5
+tcp_max_per_addr = 1
+tcp_client_max_idle = 0
+enable_krb5 = no
+krb5_principal = auditd
+krb5_key_file = /etc/audit/audit.key
+distribute_network = no
+q_depth = 2000
+overflow_action = SYSLOG
+max_log_file_action = ROTATE
+log_file = /var/log/audit/audit.log
+log_group = root
+log_format = ENRICHED
+AUDITD_CONF_EOF
+    
+    chmod 640 "$auditd_conf"
+    success "Auditd daemon configuration completed for RHEL family"
+}
+
+# ===============================================================================
 # AUDIT PLUGIN CONFIGURATION
 # ===============================================================================
 
@@ -494,6 +539,38 @@ configure_selinux() {
         log "INFO" "SELinux configuration complete"
     else
         log "INFO" "SELinux is disabled, skipping configuration"
+    fi
+}
+
+# ===============================================================================
+# APPARMOR CONFIGURATION
+# ===============================================================================
+
+configure_apparmor() {
+    log "INFO" "Checking AppArmor configuration for RHEL family..."
+    
+    local apparmor_profile="/etc/apparmor.d/usr.sbin.rsyslogd"
+    
+    if [[ -f "$apparmor_profile" ]]; then
+        backup_file "$apparmor_profile"
+        
+        # Add python execution permissions to rsyslog AppArmor profile
+        if ! grep -q "/usr/bin/python3" "$apparmor_profile"; then
+            sed -i '/^  \/usr\/sbin\/rsyslogd mr,/a\  \/usr\/bin\/python3 ix,' "$apparmor_profile"
+        fi
+        
+        if ! grep -q "/usr/local/bin/qradar_execve_parser.py" "$apparmor_profile"; then
+            sed -i '/^  \/usr\/sbin\/rsyslogd mr,/a\  \/usr\/local\/bin\/qradar_execve_parser.py ix,' "$apparmor_profile"
+        fi
+        
+        # Reload AppArmor profile
+        if command -v apparmor_parser &> /dev/null; then
+            apparmor_parser -r "$apparmor_profile" 2>/dev/null || warn "AppArmor profile reload failed"
+        fi
+        
+        success "AppArmor rsyslog permissions configured for RHEL family"
+    else
+        log "INFO" "AppArmor profile not found, skipping (normal for RHEL family)"
     fi
 }
 
@@ -937,8 +1014,10 @@ main() {
     install_required_packages
     deploy_execve_parser
     configure_auditd
+    configure_auditd_daemon
     configure_audit_plugins
     configure_selinux
+    configure_apparmor
     configure_firewall
     configure_rsyslog
     restart_services

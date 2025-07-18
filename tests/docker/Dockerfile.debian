@@ -1,0 +1,31 @@
+FROM debian:12
+
+# Install required packages
+RUN apt-get update && apt-get install -y \
+    sudo \
+    systemd \
+    rsyslog \
+    auditd \
+    python3 \
+    python3-pip \
+    netcat-openbsd \
+    curl \
+    wget \
+    shellcheck \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create test user with sudo privileges
+RUN useradd -m -s /bin/bash testuser && \
+    echo "testuser:testpass" | chpasswd && \
+    usermod -aG sudo testuser && \
+    echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Copy scripts
+COPY src/ /opt/qradar/src/
+RUN chmod +x /opt/qradar/src/installers/debian/qradar_debian_installer.sh
+
+# Set working directory
+WORKDIR /opt/qradar
+
+# Test script
+CMD ["sudo", "bash", "src/installers/debian/qradar_debian_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
