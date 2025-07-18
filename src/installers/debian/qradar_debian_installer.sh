@@ -66,6 +66,7 @@ SYSLOG_FILE="/var/log/syslog"
 QRADAR_IP=""
 QRADAR_PORT=""
 DRY_RUN=false
+RESTORE_MODE=false
 
 # ===============================================================================
 # YARDIMCI FONKSİYONLAR
@@ -173,10 +174,103 @@ backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
         local backup_file
-backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
+        backup_file="$BACKUP_DIR/$(basename "$file").$(date +%H%M%S)"
         mkdir -p "$BACKUP_DIR"
         cp "$file" "$backup_file" || warn "$file yedeklenemedi"
         log "INFO" "$file dosyası $backup_file konumuna yedeklendi"
+    fi
+}
+
+# Restore from backup
+restore_file() {
+    local file="$1"
+    
+    # Find the most recent backup
+    local most_recent_backup
+    most_recent_backup=$(find "$BACKUP_DIR" -name "$(basename "$file").*" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
+    
+    if [[ -n "$most_recent_backup" && -f "$most_recent_backup" ]]; then
+        cp "$most_recent_backup" "$file"
+        log "INFO" "Restored: $file from $most_recent_backup"
+        return 0
+    else
+        log "WARN" "No backup found for: $file"
+        return 1
+    fi
+}
+
+# ===============================================================================
+# ROLLBACK FUNCTIONALITY
+# ===============================================================================
+
+rollback_qradar_changes() {
+    log "INFO" "Starting QRadar configuration rollback for Debian/Kali..."
+    
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        error_exit "Backup directory not found: $BACKUP_DIR. No rollback possible."
+    fi
+    
+    # Stop services before rollback
+    log "INFO" "Stopping services..."
+    systemctl stop rsyslog auditd 2>/dev/null || true
+    
+    # Restore configuration files
+    local files_to_restore=(
+        "/etc/audit/auditd.conf"
+        "/etc/audit/rules.d/99-qradar.rules"
+        "/etc/audit/plugins.d/syslog.conf"
+        "/etc/audisp/plugins.d/syslog.conf"
+        "/etc/rsyslog.d/99-qradar.conf"
+        "/etc/rsyslog.conf"
+        "/etc/apparmor.d/usr.sbin.rsyslogd"
+    )
+    
+    local restored_count=0
+    local failed_count=0
+    
+    for file in "${files_to_restore[@]}"; do
+        if restore_file "$file"; then
+            ((restored_count++))
+        else
+            ((failed_count++))
+        fi
+    done
+    
+    # Remove installed files
+    log "INFO" "Removing QRadar-specific files..."
+    local files_to_remove=(
+        "$CONCAT_SCRIPT_PATH"
+        "/usr/local/bin/qradar_execve_parser.py"
+    )
+    
+    for file in "${files_to_remove[@]}"; do
+        if [[ -f "$file" ]]; then
+            rm -f "$file"
+            log "INFO" "Removed: $file"
+        fi
+    done
+    
+    # Remove QRadar audit rules
+    if [[ -f "/etc/audit/rules.d/99-qradar.rules" ]]; then
+        rm -f "/etc/audit/rules.d/99-qradar.rules"
+        log "INFO" "Removed QRadar audit rules"
+    fi
+    
+    # Restart services
+    log "INFO" "Restarting services..."
+    systemctl restart auditd rsyslog 2>/dev/null || true
+    
+    # Reload AppArmor if available
+    if command_exists aa-enforce; then
+        aa-enforce /etc/apparmor.d/usr.sbin.rsyslogd 2>/dev/null || true
+    fi
+    
+    log "INFO" "Rollback completed - Restored: $restored_count, Failed: $failed_count"
+    
+    if [[ $failed_count -eq 0 ]]; then
+        success "QRadar configuration successfully rolled back to original state"
+    else
+        warn "Rollback completed with $failed_count failures - check logs for details"
     fi
 }
 
@@ -1048,14 +1142,29 @@ main() {
     touch "$LOG_FILE" || error_exit "Log dosyası oluşturulamıyor: $LOG_FILE"
     chmod 640 "$LOG_FILE" 2>/dev/null || true
     
+    # Root kontrolü
+    [[ $EUID -eq 0 ]] || error_exit "Bu script root yetkisiyle çalıştırılmalıdır. 'sudo' kullanın."
+    
+    # Check if restore mode is requested
+    if [[ "$RESTORE_MODE" == true ]]; then
+        log "INFO" "============================================================="
+        log "INFO" "QRadar Configuration Rollback v$SCRIPT_VERSION"
+        log "INFO" "Starting: $(date)"
+        log "INFO" "============================================================="
+        
+        rollback_qradar_changes
+        
+        log "INFO" "============================================================="
+        log "INFO" "Rollback completed: $(date)"
+        log "INFO" "============================================================="
+        return 0
+    fi
+    
     log "INFO" "============================================================="
     log "INFO" "QRadar Universal Debian/Kali Log Forwarding Installer v$SCRIPT_VERSION"
     log "INFO" "Başlatılıyor: $(date)"
     log "INFO" "QRadar Hedefi: $QRADAR_IP:$QRADAR_PORT"
     log "INFO" "============================================================="
-    
-    # Root kontrolü
-    [[ $EUID -eq 0 ]] || error_exit "Bu script root yetkisiyle çalıştırılmalıdır. 'sudo' kullanın."
     
     # Ana kurulum adımları
     detect_debian_version
@@ -1086,18 +1195,25 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --restore)
+            RESTORE_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "QRadar Universal Debian/Kali Installer v$SCRIPT_VERSION"
             echo ""
             echo "Usage: $0 <QRADAR_IP> <QRADAR_PORT> [OPTIONS]"
+            echo "       $0 --restore"
             echo ""
             echo "Options:"
             echo "  --minimal  Use minimal audit rules for EPS optimization"
+            echo "  --restore  Restore original configuration (rollback all changes)"
             echo "  --help     Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0 192.168.1.100 514"
             echo "  $0 192.168.1.100 514 --minimal"
+            echo "  $0 --restore"
             exit 0
             ;;
         -*)
@@ -1117,20 +1233,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Parametre doğrulama
-if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
-    echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
-    echo "Örnek: $0 192.168.1.100 514 --minimal"
-    exit 1
-fi
+if [[ "$RESTORE_MODE" != true ]]; then
+    if [[ -z "$QRADAR_IP" ]] || [[ -z "$QRADAR_PORT" ]]; then
+        echo "Kullanım: $0 <QRADAR_IP> <QRADAR_PORT> [--minimal]"
+        echo "       $0 --restore"
+        echo "Örnek: $0 192.168.1.100 514 --minimal"
+        echo "       $0 --restore"
+        exit 1
+    fi
 
-# IP adresi format kontrolü
-if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
+    # IP adresi format kontrolü
+    if ! [[ "$QRADAR_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        error_exit "Geçersiz IP adresi formatı: $QRADAR_IP"
+    fi
 fi
 
 # Port numarası kontrolü
-if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
-    error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
+if [[ "$RESTORE_MODE" != true ]]; then
+    if ! [[ "$QRADAR_PORT" =~ ^[0-9]+$ ]] || [[ "$QRADAR_PORT" -lt 1 ]] || [[ "$QRADAR_PORT" -gt 65535 ]]; then
+        error_exit "Geçersiz port numarası: $QRADAR_PORT (1-65535 arası olmalı)"
+    fi
 fi
 
 # Ana fonksiyonu çalıştır
