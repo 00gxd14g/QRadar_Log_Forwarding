@@ -122,11 +122,13 @@ command_exists() {
 }
 
 # Check if we need sudo
+# shellcheck disable=SC2317
 need_sudo() {
     [[ $EUID -ne 0 ]] && command_exists sudo
 }
 
 # Execute command with or without sudo
+# shellcheck disable=SC2317
 execute_with_privilege() {
     if need_sudo; then
         sudo "$@"

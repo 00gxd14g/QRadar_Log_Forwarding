@@ -19,6 +19,7 @@ SYSLOG_IP="172.20.0.10"
 TEST_TIMEOUT=60
 
 # Function to cleanup containers and networks
+# shellcheck disable=SC2317
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up test environment...${NC}"
     
