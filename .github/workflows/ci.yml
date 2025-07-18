@@ -50,43 +50,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+          
       - name: Build Ubuntu test container
         run: |
-          cat > Dockerfile.ubuntu << 'EOF'
-          FROM ubuntu:24.04
-          
-          # Install required packages
-          RUN apt-get update && apt-get install -y \
-              sudo \
-              systemd \
-              rsyslog \
-              auditd \
-              python3 \
-              python3-pip \
-              netcat-openbsd \
-              curl \
-              wget \
-              && rm -rf /var/lib/apt/lists/*
-          
-          # Create test user with sudo privileges
-          RUN useradd -m -s /bin/bash testuser && \
-              echo "testuser:testpass" | chpasswd && \
-              usermod -aG sudo testuser && \
-              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          
-          # Copy scripts
-          COPY src/ /opt/qradar/src/
-          RUN chmod +x /opt/qradar/src/installers/ubuntu/qradar_ubuntu_installer.sh
-          
-          # Set working directory
-          WORKDIR /opt/qradar
-          
-          # Test script
-          CMD ["sudo", "bash", "src/installers/ubuntu/qradar_ubuntu_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
-          EOF
-          
-          docker build -f Dockerfile.ubuntu -t qradar-ubuntu-test .
+          docker build -f tests/docker/Dockerfile.ubuntu -t qradar-ubuntu-test .
           
       - name: Run Ubuntu installer test
         run: |
@@ -103,40 +70,7 @@ jobs:
         
       - name: Build Debian test container
         run: |
-          cat > Dockerfile.debian << 'EOF'
-          FROM debian:12
-          
-          # Install required packages
-          RUN apt-get update && apt-get install -y \
-              sudo \
-              systemd \
-              rsyslog \
-              auditd \
-              python3 \
-              python3-pip \
-              netcat-openbsd \
-              curl \
-              wget \
-              && rm -rf /var/lib/apt/lists/*
-          
-          # Create test user with sudo privileges
-          RUN useradd -m -s /bin/bash testuser && \
-              echo "testuser:testpass" | chpasswd && \
-              usermod -aG sudo testuser && \
-              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          
-          # Copy scripts
-          COPY src/ /opt/qradar/src/
-          RUN chmod +x /opt/qradar/src/installers/debian/qradar_debian_installer.sh
-          
-          # Set working directory
-          WORKDIR /opt/qradar
-          
-          # Test script
-          CMD ["sudo", "bash", "src/installers/debian/qradar_debian_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
-          EOF
-          
-          docker build -f Dockerfile.debian -t qradar-debian-test .
+          docker build -f tests/docker/Dockerfile.debian -t qradar-debian-test .
           
       - name: Run Debian installer test
         run: |
@@ -153,40 +87,7 @@ jobs:
         
       - name: Build RHEL test container
         run: |
-          cat > Dockerfile.rhel << 'EOF'
-          FROM rockylinux:9
-          
-          # Install required packages
-          RUN dnf update -y && dnf install -y \
-              sudo \
-              systemd \
-              rsyslog \
-              audit \
-              python3 \
-              python3-pip \
-              nc \
-              curl \
-              wget \
-              && dnf clean all
-          
-          # Create test user with sudo privileges
-          RUN useradd -m -s /bin/bash testuser && \
-              echo "testuser:testpass" | chpasswd && \
-              usermod -aG wheel testuser && \
-              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          
-          # Copy scripts
-          COPY src/ /opt/qradar/src/
-          RUN chmod +x /opt/qradar/src/installers/rhel/qradar_rhel_installer.sh
-          
-          # Set working directory
-          WORKDIR /opt/qradar
-          
-          # Test script
-          CMD ["sudo", "bash", "src/installers/rhel/qradar_rhel_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
-          EOF
-          
-          docker build -f Dockerfile.rhel -t qradar-rhel-test .
+          docker build -f tests/docker/Dockerfile.rhel -t qradar-rhel-test .
           
       - name: Run RHEL installer test
         run: |
@@ -203,46 +104,28 @@ jobs:
         
       - name: Build Universal test container
         run: |
-          cat > Dockerfile.universal << 'EOF'
-          FROM ubuntu:24.04
-          
-          # Install required packages
-          RUN apt-get update && apt-get install -y \
-              sudo \
-              systemd \
-              rsyslog \
-              auditd \
-              python3 \
-              python3-pip \
-              netcat-openbsd \
-              curl \
-              wget \
-              && rm -rf /var/lib/apt/lists/*
-          
-          # Create test user with sudo privileges
-          RUN useradd -m -s /bin/bash testuser && \
-              echo "testuser:testpass" | chpasswd && \
-              usermod -aG sudo testuser && \
-              echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-          
-          # Copy scripts
-          COPY src/ /opt/qradar/src/
-          RUN chmod +x /opt/qradar/src/installers/universal/qradar_universal_installer.sh
-          RUN chmod +x /opt/qradar/src/installers/ubuntu/qradar_ubuntu_installer.sh
-          
-          # Set working directory
-          WORKDIR /opt/qradar
-          
-          # Test script
-          CMD ["sudo", "bash", "src/installers/universal/qradar_universal_installer.sh", "192.168.1.100", "514", "--minimal", "--dry-run"]
-          EOF
-          
-          docker build -f Dockerfile.universal -t qradar-universal-test .
+          docker build -f tests/docker/Dockerfile.universal -t qradar-universal-test .
           
       - name: Run Universal installer test
         run: |
           echo "Testing Universal installer in Docker..."
           docker run --rm qradar-universal-test
+
+  docker-test-runner:
+    runs-on: ubuntu-latest
+    name: Run Docker Test Suite
+    needs: syntax-check
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Make test runner executable
+        run: chmod +x tests/docker/run_tests.sh
+        
+      - name: Run comprehensive Docker test suite
+        run: |
+          cd tests/docker
+          ./run_tests.sh
 
   python-test:
     runs-on: ubuntu-latest
@@ -319,7 +202,7 @@ jobs:
   release-preparation:
     runs-on: ubuntu-latest
     name: Prepare Release Artifacts
-    needs: [docker-test-ubuntu, docker-test-debian, docker-test-rhel, docker-test-universal, python-test, configuration-validation]
+    needs: [docker-test-ubuntu, docker-test-debian, docker-test-rhel, docker-test-universal, docker-test-runner, python-test, configuration-validation]
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository

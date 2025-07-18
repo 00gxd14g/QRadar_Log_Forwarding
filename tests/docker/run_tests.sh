@@ -47,7 +47,14 @@ if command -v shellcheck &> /dev/null; then
     done
     echo -e "${GREEN}✓ Shellcheck passed${NC}"
 else
-    echo -e "${YELLOW}⚠ Shellcheck not found, skipping${NC}"
+    echo -e "${YELLOW}⚠ Shellcheck not found, installing...${NC}"
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y shellcheck
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y ShellCheck
+    else
+        echo -e "${YELLOW}⚠ Could not install shellcheck, skipping${NC}"
+    fi
 fi
 
 # Test counter
