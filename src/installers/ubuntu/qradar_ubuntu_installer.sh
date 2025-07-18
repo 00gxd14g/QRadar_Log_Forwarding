@@ -184,7 +184,7 @@ detect_ubuntu_version() {
         error_exit "/etc/os-release dosyası bulunamadı. Ubuntu sistemi doğrulanamıyor."
     fi
     
-    # shellcheck source=/etc/os-release
+    # shellcheck disable=SC1091
     source /etc/os-release
     
     # Gerekli değişkenlerin tanımlı olduğunu kontrol et

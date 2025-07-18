@@ -184,7 +184,7 @@ detect_rhel_family() {
         error_exit "/etc/os-release file not found. Cannot verify RHEL system."
     fi
     
-    # shellcheck source=/etc/os-release
+    # shellcheck disable=SC1091
     source /etc/os-release
     
     # Check for required variables

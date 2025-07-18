@@ -100,7 +100,7 @@ detect_distribution() {
         error_exit "/etc/os-release file not found. Unsupported system."
     fi
     
-    # shellcheck source=/etc/os-release
+    # shellcheck disable=SC1091
     source /etc/os-release
     
     DETECTED_DISTRO="$ID"

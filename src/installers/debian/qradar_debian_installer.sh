@@ -176,7 +176,7 @@ detect_debian_version() {
         error_exit "/etc/os-release dosyası bulunamadı. Debian sistemi doğrulanamıyor."
     fi
     
-    # shellcheck source=/etc/os-release
+    # shellcheck disable=SC1091
     source /etc/os-release
     
     # Gerekli değişkenlerin tanımlı olduğunu kontrol et

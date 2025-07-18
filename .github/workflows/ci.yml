@@ -24,7 +24,7 @@ jobs:
           echo "Running shellcheck on all shell scripts..."
           find . -name "*.sh" -type f | while read -r script; do
             echo "Checking: $script"
-            shellcheck -e SC1091 "$script" || exit 1
+            shellcheck "$script" || exit 1
           done
           
       - name: Validate rsyslog configuration syntax

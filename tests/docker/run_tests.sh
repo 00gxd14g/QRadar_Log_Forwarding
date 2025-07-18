@@ -43,7 +43,7 @@ if command -v shellcheck &> /dev/null; then
     echo "Running shellcheck..."
     find ../.. -name "*.sh" -type f | while read -r script; do
         echo "Checking: $script"
-        shellcheck -e SC1091 "$script" || exit 1
+        shellcheck "$script" || exit 1
     done
     echo -e "${GREEN}✓ Shellcheck passed${NC}"
 else
