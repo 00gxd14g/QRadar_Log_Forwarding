@@ -537,46 +537,61 @@ sudo nano /etc/rsyslog.d/99-qradar.conf
 Copy and paste the following configuration into the file, replacing `<QRADAR_IP>` and `<QRADAR_PORT>` with your QRadar server's IP address and port:
 
 ```
-# QRadar Log Forwarding Configuration
+# QRadar Log Forwarding Configuration - Alternative Version
 # Load external-program output module
 module(load="omprog")
 
-# (omfwd is built-in in modern rsyslog; load explicitly if your distro requires)
-# module(load="omfwd")
-
 # QRadar-compatible template (RFC 3339 time stamp)
 template(name="QRadarFormat" type="string"
-         string="<%pri%>%timestamp:::date-rfc3339% %hostname% %app-name%: %msg%\n")
+         string="<%PRI%>%TIMESTAMP:::date-rfc3339% %HOSTNAME% %app-name%: %msg%\n")
 
 # Only process messages from facility local3
 if $syslogfacility-text == 'local3' then {
 
-    # Send EXECVE audit events through the custom parser first
+    # Process EXECVE events separately
     if $msg contains 'type=EXECVE' then {
+        # Send to parser and then to QRadar
         action(
             type="omprog"
             binary="/usr/local/bin/qradar_execve_parser.py"
             template="RSYSLOG_TraditionalFileFormat"
+            output="/dev/stdout"
         )
+        
+        # Forward parsed output to QRadar
+        action(
+            type="omfwd"
+            target="<QRADAR_IP>"
+            port="<QRADAR_PORT>"
+            protocol="tcp"
+            template="QRadarFormat"
+            queue.type="linkedlist"
+            queue.size="10000"
+        )
+        stop  # Don't process this message again
     }
-
-    # Forward everything (original and/or parsed) to QRadar
+    
+    # Forward all other (non-EXECVE) audit logs to QRadar
     action(
         type="omfwd"
         target="<QRADAR_IP>"
         port="<QRADAR_PORT>"
         protocol="tcp"
         template="QRadarFormat"
-
-        # Reliable async queue
+        
+        # Reliable async queue with reasonable limits
         queue.type="linkedlist"
         queue.size="50000"
-        action.resumeRetryCount="-1"
+        queue.maxdiskspace="2g"
+        queue.saveOnShutdown="on"
+        queue.discardMark="45000"
+        queue.discardSeverity="4"
+        action.resumeRetryCount="100"
+        action.resumeInterval="30"
     )
 
     stop    # Prevent further rule processing
 }
-
 ```
 
 ### 8. Restart Services
