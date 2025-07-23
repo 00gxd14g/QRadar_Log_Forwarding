@@ -158,13 +158,13 @@ Copy and paste the following code into the file:
 # -*- coding: utf-8 -*-
 import sys
 import re
-import socket
 import signal
 
 class ExecveParser:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     def _signal_handler(self, signum, frame):
         sys.exit(0)
@@ -232,8 +232,7 @@ sudo nano /etc/rsyslog.d/99-qradar.conf
 Copy and paste the following configuration into the file, replacing `<QRADAR_IP>` and `<QRADAR_PORT>` with your QRadar server's IP address and port:
 
 ```
-# QRadar Log Forwarding Configuration - Alternative Version
-# Load external-program output module
+# QRadar Log Forwarding Configuration
 module(load="omprog")
 
 # QRadar-compatible template (RFC 3339 time stamp)
@@ -243,30 +242,18 @@ template(name="QRadarFormat" type="string"
 # Only process messages from facility local3
 if $syslogfacility-text == 'local3' then {
 
-    # Process EXECVE events separately
+    # Process EXECVE events with parser to prevent duplicates
     if $msg contains 'type=EXECVE' then {
-        # Send to parser and then to QRadar
         action(
             type="omprog"
             binary="/usr/local/bin/qradar_execve_parser.py"
             template="RSYSLOG_TraditionalFileFormat"
-            output="/dev/stdout"
+            forceSingleInstance="on"
+            queue.workerThreads="1"
         )
-        
-        # Forward parsed output to QRadar
-        action(
-            type="omfwd"
-            target="<QRADAR_IP>"
-            port="<QRADAR_PORT>"
-            protocol="tcp"
-            template="QRadarFormat"
-            queue.type="linkedlist"
-            queue.size="10000"
-        )
-        stop  # Don't process this message again
     }
     
-    # Forward all other (non-EXECVE) audit logs to QRadar
+    # Forward all audit logs to QRadar
     action(
         type="omfwd"
         target="<QRADAR_IP>"
@@ -279,6 +266,8 @@ if $syslogfacility-text == 'local3' then {
         queue.size="50000"
         queue.maxdiskspace="2g"
         queue.saveOnShutdown="on"
+        queue.highWatermark="40000"
+        queue.lowWatermark="10000"
         queue.discardMark="45000"
         queue.discardSeverity="4"
         action.resumeRetryCount="100"
@@ -300,9 +289,20 @@ sudo systemctl restart rsyslog
 
 ### 7. Verify the Setup
 
-You can verify the setup by checking the logs on your QRadar server or by using `tcpdump` to monitor the traffic to your QRadar server:
+Verify the configuration and test log forwarding:
 
 ```bash
+# Check rsyslog configuration syntax
+sudo rsyslogd -N1
+
+# Test the parser script
+echo 'type=EXECVE msg=audit(123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | sudo /usr/local/bin/qradar_execve_parser.py
+
+# Send test logs
+logger -p local3.info "Test QRadar forwarding"
+logger -p local3.info 'type=EXECVE msg=audit(1234:567): argc=3 a0="test" a1="-la" a2="/tmp"'
+
+# Monitor traffic to QRadar
 sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
 ```
 
@@ -445,13 +445,13 @@ Copy and paste the following code into the file:
 # -*- coding: utf-8 -*-
 import sys
 import re
-import socket
 import signal
 
 class ExecveParser:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     def _signal_handler(self, signum, frame):
         sys.exit(0)
@@ -510,19 +510,34 @@ sudo chmod +x /usr/local/bin/qradar_execve_parser.py
 
 ### 5. Configure SELinux
 
-If SELinux is enabled on your system, you need to allow rsyslog to make network connections and set the correct context for the Python script:
+If SELinux is enabled on your system, configure the necessary permissions:
 
 ```bash
+# Allow rsyslog to make network connections
 sudo setsebool -P rsyslog_can_network_connect on
-sudo restorecon -R /usr/local/bin/qradar_execve_parser.py
+
+# Set proper context for the Python script
+sudo semanage fcontext -a -t bin_t "/usr/local/bin/qradar_execve_parser.py"
+sudo restorecon -v /usr/local/bin/qradar_execve_parser.py
+
+# Allow rsyslog to execute external programs
+sudo setsebool -P nis_enabled 1
+
+# If additional permissions are needed, create a custom policy
+# Check for denials first
+sudo ausearch -c 'rsyslogd' --raw | audit2allow -M my-rsyslogd
+# Apply the policy if needed
+sudo semodule -i my-rsyslogd.pp
 ```
 
 ### 6. Configure FirewallD
 
-If FirewallD is enabled, you need to add a rule to allow traffic to the QRadar port:
+If FirewallD is enabled and you have strict outbound rules, allow traffic to QRadar:
 
 ```bash
-sudo firewall-cmd --permanent --add-port=<QRADAR_PORT>/tcp
+# For most environments, outbound traffic is allowed by default
+# If you have strict outbound rules, add this:
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -d <QRADAR_IP> -p tcp --dport <QRADAR_PORT> -j ACCEPT
 sudo firewall-cmd --reload
 ```
 
@@ -537,8 +552,7 @@ sudo nano /etc/rsyslog.d/99-qradar.conf
 Copy and paste the following configuration into the file, replacing `<QRADAR_IP>` and `<QRADAR_PORT>` with your QRadar server's IP address and port:
 
 ```
-# QRadar Log Forwarding Configuration - Alternative Version
-# Load external-program output module
+# QRadar Log Forwarding Configuration
 module(load="omprog")
 
 # QRadar-compatible template (RFC 3339 time stamp)
@@ -548,30 +562,18 @@ template(name="QRadarFormat" type="string"
 # Only process messages from facility local3
 if $syslogfacility-text == 'local3' then {
 
-    # Process EXECVE events separately
+    # Process EXECVE events with parser to prevent duplicates
     if $msg contains 'type=EXECVE' then {
-        # Send to parser and then to QRadar
         action(
             type="omprog"
             binary="/usr/local/bin/qradar_execve_parser.py"
             template="RSYSLOG_TraditionalFileFormat"
-            output="/dev/stdout"
+            forceSingleInstance="on"
+            queue.workerThreads="1"
         )
-        
-        # Forward parsed output to QRadar
-        action(
-            type="omfwd"
-            target="<QRADAR_IP>"
-            port="<QRADAR_PORT>"
-            protocol="tcp"
-            template="QRadarFormat"
-            queue.type="linkedlist"
-            queue.size="10000"
-        )
-        stop  # Don't process this message again
     }
     
-    # Forward all other (non-EXECVE) audit logs to QRadar
+    # Forward all audit logs to QRadar
     action(
         type="omfwd"
         target="<QRADAR_IP>"
@@ -584,6 +586,8 @@ if $syslogfacility-text == 'local3' then {
         queue.size="50000"
         queue.maxdiskspace="2g"
         queue.saveOnShutdown="on"
+        queue.highWatermark="40000"
+        queue.lowWatermark="10000"
         queue.discardMark="45000"
         queue.discardSeverity="4"
         action.resumeRetryCount="100"
@@ -605,8 +609,90 @@ sudo systemctl restart rsyslog
 
 ### 9. Verify the Setup
 
-You can verify the setup by checking the logs on your QRadar server or by using `tcpdump` to monitor the traffic to your QRadar server:
+Verify the configuration and test log forwarding:
 
 ```bash
+# Check rsyslog configuration syntax
+sudo rsyslogd -N1
+
+# Test the parser script
+echo 'type=EXECVE msg=audit(123:456): argc=3 a0="ls" a1="-la" a2="/tmp"' | sudo /usr/local/bin/qradar_execve_parser.py
+
+# Send test logs
+logger -p local3.info "Test QRadar forwarding"
+logger -p local3.info 'type=EXECVE msg=audit(1234:567): argc=3 a0="test" a1="-la" a2="/tmp"'
+
+# Monitor traffic to QRadar
 sudo tcpdump -i any host <QRADAR_IP> and port <QRADAR_PORT> -A -n
 ```
+
+## Troubleshooting
+
+### Check Service Status
+```bash
+# Check auditd status
+sudo systemctl status auditd
+
+# Check rsyslog status
+sudo systemctl status rsyslog
+
+# View rsyslog errors
+sudo journalctl -u rsyslog -f
+```
+
+### Debug Rsyslog Configuration
+```bash
+# Run rsyslog in debug mode
+sudo rsyslogd -dn 2>&1 | grep -i "qradar\|omprog\|omfwd\|local3"
+
+# Check rsyslog statistics
+sudo pkill -USR1 rsyslogd && sudo tail -f /var/log/messages | grep rsyslogd-pstats
+```
+
+### Common Issues
+
+1. **SELinux Denials**: Check `/var/log/audit/audit.log` for denials and create custom policies as needed
+2. **Network Connectivity**: Ensure the system can reach QRadar on the specified port
+3. **Parser Errors**: Test the parser script manually with sample EXECVE logs
+4. **Queue Overflow**: Adjust queue sizes based on your log volume
+
+## Performance Tuning
+
+For high-volume environments, consider these optimizations:
+
+### Audit Buffer Size
+```bash
+# In /etc/audit/rules.d/99-qradar.rules, increase buffer size:
+-b 32768  # or higher for very busy systems
+```
+
+### Rsyslog Global Settings
+```bash
+# Add to /etc/rsyslog.conf:
+$MaxMessageSize 64k
+$WorkDirectory /var/spool/rsyslog
+$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+```
+
+### Log Rotation
+```bash
+# Create /etc/logrotate.d/qradar-audit:
+/var/log/audit/audit.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 0600 root root
+    postrotate
+        /usr/bin/pkill -HUP rsyslogd > /dev/null 2>&1 || true
+    endscript
+}
+```
+
+## Notes
+
+- The Python parser script formats EXECVE logs for better readability in QRadar
+- All audit events are forwarded to QRadar, with EXECVE events being pre-processed
+- The configuration uses reliable queuing to prevent log loss during network issues
+- Adjust queue parameters based on your environment's log volume and network reliability
